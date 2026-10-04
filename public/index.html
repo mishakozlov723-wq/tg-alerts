@@ -62,6 +62,16 @@ input::placeholder{color:var(--faint)}
 .item.done{opacity:.4}
 .x{background:none;border:1px solid var(--line);border-radius:12px;width:40px;height:40px;font-size:12px;color:var(--mut);flex:none;transition:.15s}
 .x:active{border-color:var(--txt);color:var(--txt)}
+.acts{display:flex;gap:8px;flex:none}
+.ed{background:none;border:1px solid var(--line);border-radius:12px;height:40px;padding:0 14px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:500;color:var(--mut);transition:.15s}
+.ed:active{border-color:var(--txt);color:var(--txt)}
+.note{font-size:13px;font-weight:300;color:var(--txt);margin-top:8px;opacity:.85;word-break:break-word}
+.item.editing{display:block}
+.item.editing .field{margin-bottom:16px}
+.item.editing input[type=text]{width:100%;background:none;border:0;padding:8px 0 0;font-size:16px;font-weight:300;color:var(--txt);outline:none}
+.erow{display:flex;gap:8px}
+.erow .ed{flex:1}
+.erow .ed.save{background:var(--txt);color:#191919;border-color:var(--txt);font-weight:600}
 .empty{color:var(--mut);font-weight:300;font-size:14px;padding:24px 0}
 .dotr{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--txt);margin-right:10px;vertical-align:middle}
 
@@ -244,15 +254,37 @@ $('#create').onclick = async () => {
   toast(`Alert set · ${sym} ${dir} ${level}`); animateLevel(0, 2300, true)
 }
 
+const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+let alertsCache = []
 async function loadAlerts() {
   const list = await api('/api/alerts')
+  alertsCache = list
   $('#alist').innerHTML = list.length ? list.map((a) => `
-    <div class="item ${a.status === 'active' ? '' : 'done'}"><div>
+    <div class="item ${a.status === 'active' ? '' : 'done'}" data-id="${a.id}"><div>
       <div class="t">${a.symbol}<em>${a.dir === 'above' ? '▲ above' : '▼ below'}</em></div>
       <div class="t" class="num" style="font-weight:200;font-size:26px;margin-top:2px">${a.level}</div>
+      ${a.note ? `<div class="note">${esc(a.note)}</div>` : ''}
       <small>${a.status === 'active' ? 'Active' : 'Triggered ' + new Date(a.firedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' at ' + a.firedPrice}</small></div>
-      <button class="x" data-id="${a.id}" aria-label="Delete alert">✕</button></div>`).join('') : '<div class="empty">No alerts yet.</div>'
+      <div class="acts">${a.status === 'active' ? `<button class="ed" data-id="${a.id}">Edit</button>` : ''}<button class="x" data-id="${a.id}" aria-label="Delete alert">✕</button></div></div>`).join('') : '<div class="empty">No alerts yet.</div>'
   $('#alist').querySelectorAll('.x').forEach((b) => b.onclick = async () => { await api('/api/alerts/' + b.dataset.id, { method: 'DELETE' }); loadAlerts() })
+  $('#alist').querySelectorAll('.acts .ed').forEach((b) => b.onclick = () => editAlert(b.dataset.id))
+}
+
+function editAlert(id) {
+  const a = alertsCache.find((x) => String(x.id) === String(id))
+  const row = $('#alist').querySelector(`.item[data-id="${id}"]`)
+  if (!a || !row) return
+  row.classList.add('editing')
+  row.innerHTML = `
+    <div class="t" style="margin-bottom:14px">${a.symbol}<em>${a.dir === 'above' ? '▲ above' : '▼ below'} ${a.level}</em></div>
+    <div class="field"><label for="note-${a.id}">Notification text</label>
+      <input type="text" id="note-${a.id}" maxlength="200" placeholder="e.g. Upper boundary taken" value="${esc(a.note || '')}"></div>
+    <div class="erow"><button class="ed" data-a="cancel">Cancel</button><button class="ed save" data-a="save">Save</button></div>`
+  const inp = row.querySelector('input'); inp.focus()
+  const save = async () => { await api('/api/alerts/' + a.id, { method: 'PATCH', body: JSON.stringify({ note: inp.value }) }); loadAlerts() }
+  row.querySelector('[data-a=save]').onclick = save
+  row.querySelector('[data-a=cancel]').onclick = () => loadAlerts()
+  inp.onkeydown = (e) => { if (e.key === 'Enter') save() }
 }
 
 async function loadNews() {

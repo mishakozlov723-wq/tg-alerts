@@ -62,6 +62,7 @@ const save = () => {
   try { fs.writeFileSync(DB_FILE, JSON.stringify(db)) } catch {}
   if (USE_REDIS) { dirty = true; flush() }
 }
+const cleanNote = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
 const defaultSettings = () => ({ lead: [15, 5], currencies: ['USD', 'EUR', 'GBP'] })
 
 // ---------- уведомления ----------
@@ -72,7 +73,7 @@ async function notify(userId, text) {
   console.log(`[notify ${userId}] ${text}`)
   if (BOT_TOKEN && /^\d+$/.test(userId)) {
     try {
-      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      await fetch(`${process.env.TG_API || 'https://api.telegram.org'}/bot${BOT_TOKEN}/sendMessage`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ chat_id: userId, text }),
       })
@@ -88,7 +89,8 @@ function onTick(sym, price) {
     const hit = a.dir === 'above' ? price >= a.level : price <= a.level
     if (!hit) continue
     a.status = 'fired'; a.firedAt = Date.now(); a.firedPrice = price; changed = true
-    notify(a.userId, `🔔 ${sym} ${a.dir} ${a.level} (price ${price})`)
+    const shownPrice = Number(price).toFixed(SYMBOLS[sym].digits)
+    notify(a.userId, a.note ? `🔔 ${sym} · ${shownPrice}\n${a.note}` : `🔔 ${sym} ${a.dir} ${a.level} (price ${shownPrice})`)
   }
   if (changed) save()
 }
@@ -131,6 +133,43 @@ function getUserId(req) {
   return null
 }
 
+// ---------- Telegram-бот: приветствие и кнопка Open Alerts ----------
+const TG_API = process.env.TG_API || 'https://api.telegram.org'
+const WEBAPP_URL = process.env.WEBAPP_URL || process.env.RENDER_EXTERNAL_URL || 'https://tg-alerts-2khy.onrender.com'
+const WELCOME = 'Price alerts for EURUSD, GBPUSD and DXY.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.\n\nTap the button below to open.'
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const tg = async (method, payload, ms = 15000) => {
+  const r = await fetch(`${TG_API}/bot${BOT_TOKEN}/${method}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload), signal: AbortSignal.timeout(ms),
+  })
+  return r.json()
+}
+async function handleUpdate(u) {
+  const m = u.message
+  if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
+  await tg('sendMessage', {
+    chat_id: m.chat.id, text: WELCOME,
+    reply_markup: { inline_keyboard: [[{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }]] },
+  })
+}
+async function pollTelegram() {
+  if (!BOT_TOKEN || process.env.BOT_POLLING === 'off' || (MOCK && process.env.BOT_POLLING !== 'on')) return
+  try { await tg('deleteWebhook', {}) } catch {}
+  console.log('[bot] жду сообщения в Telegram')
+  let offset = 0
+  for (;;) {
+    try {
+      const j = await tg('getUpdates', { offset, timeout: 25, allowed_updates: ['message'] }, 35000)
+      if (!j.ok) { await sleep(j.error_code === 409 ? 5000 : 3000); continue }
+      for (const u of j.result) {
+        offset = u.update_id + 1
+        handleUpdate(u).catch((e) => console.error('[bot]', e.message))
+      }
+    } catch (e) { await sleep(3000) }
+  }
+}
+
 // ---------- HTTP ----------
 const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)) }
 const body = (req) => new Promise((ok) => { let d = ''; req.on('data', (c) => (d += c)); req.on('end', () => { try { ok(JSON.parse(d || '{}')) } catch { ok({}) } }) })
@@ -159,10 +198,17 @@ const server = http.createServer(async (req, res) => {
     const b = await body(req)
     const level = Number(b.level)
     if (!SYMBOLS[b.symbol] || !['above', 'below'].includes(b.dir) || !isFinite(level)) return json(res, 400, { error: 'bad input' })
-    const a = { id: db.seq++, userId: uid, symbol: b.symbol, dir: b.dir, level, status: 'active', createdAt: Date.now() }
+    const a = { id: db.seq++, userId: uid, symbol: b.symbol, dir: b.dir, level, note: cleanNote(b.note), status: 'active', createdAt: Date.now() }
     db.alerts.push(a); save(); return json(res, 200, a)
   }
   const del = p.match(/^\/api\/alerts\/(\d+)$/)
+  if (del && req.method === 'PATCH') {
+    const a = db.alerts.find((x) => x.id === Number(del[1]) && x.userId === uid)
+    if (!a) return json(res, 404, { error: 'not found' })
+    const b = await body(req)
+    if ('note' in b) a.note = cleanNote(b.note)
+    save(); return json(res, 200, a)
+  }
   if (del && req.method === 'DELETE') {
     db.alerts = db.alerts.filter((a) => !(a.id === Number(del[1]) && a.userId === uid)); save(); return json(res, 200, { ok: true })
   }
@@ -189,5 +235,6 @@ const server = http.createServer(async (req, res) => {
 })
 
 startPrices(onTick)
+pollTelegram()
 setInterval(() => checkNews().catch((e) => console.error('[news]', e.message)), 20000)
 server.listen(PORT, () => console.log(`Open in browser: http://localhost:${PORT}`))

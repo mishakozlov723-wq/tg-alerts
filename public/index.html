@@ -250,6 +250,7 @@ $('#create').onclick = async () => {
   const level = parseFloat($('#level').value)
   if (!isFinite(level)) return toast('Enter a price level')
   const r = await api('/api/alerts', { method: 'POST', body: JSON.stringify({ symbol: sym, dir, level }) })
+  if (r.error === 'limit') return toast(`Limit reached: ${r.max} active alerts. Delete one first.`)
   if (r.error) return toast('Error: ' + r.error)
   toast(`Alert set · ${sym} ${dir} ${level}`); animateLevel(0, 2300, true)
 }

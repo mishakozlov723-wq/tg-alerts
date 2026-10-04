@@ -1,8 +1,9 @@
 // Красные новости из открытого календаря Forex Factory (JSON-фид faireconomy).
-// Берём эту и следующую неделю. Кэш 30 минут; при ошибке держим старые данные и пробуем снова через 5 минут.
+// Источники по порядку: 1) зеркало на GitHub (NEWS_MIRROR_URL), 2) прямой источник.
+// Кэш в памяти и в Upstash; при ошибке держим старые данные и повторяем с растущей паузой.
 const URL_THIS = process.env.NEWS_URL || 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
 const HOSTS = [URL_THIS, URL_THIS.replace('://nfs.', '://cdn-nfs.')]
-const TTL = 60 * 60e3
+const TTL = 30 * 60e3
 const RETRY_MIN = 10 * 60e3
 const RETRY_MAX = 60 * 60e3
 const NEWS_KEY = 'tg-alerts-news'
@@ -25,20 +26,44 @@ async function redis(cmd) {
 }
 
 async function fetchJson(url) {
-  const r = await fetch(url, {
-    headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36', accept: 'application/json' },
-    signal: AbortSignal.timeout(15000),
-  })
+  let r
+  try {
+    r = await fetch(url, {
+      headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36', accept: 'application/json' },
+      signal: AbortSignal.timeout(15000),
+    })
+  } catch (e) {
+    throw new Error(`${e.message}${e.cause && e.cause.code ? ' ' + e.cause.code : ''} (${url})`)
+  }
   if (!r.ok) throw new Error(`HTTP ${r.status} (${url})`)
   return r.json()
 }
 
 async function fetchWeek(week) {
-  let last
+  const errors = []
   for (const h of HOSTS) {
-    try { return await fetchJson(h.replace('thisweek', week)) } catch (e) { last = e }
+    try { return await fetchJson(h.replace('thisweek', week)) } catch (e) { errors.push(e.message) }
   }
-  throw last
+  throw new Error(errors.join(' | '))
+}
+
+async function loadRaw() {
+  const errors = []
+  const mirror = process.env.NEWS_MIRROR_URL
+  if (mirror) {
+    try {
+      const j = await fetchJson(mirror)
+      if (Array.isArray(j) && j.length) return { raw: j, via: 'зеркало' }
+      errors.push('зеркало пустое')
+    } catch (e) { errors.push('зеркало: ' + e.message) }
+  }
+  try {
+    const thisWeek = await fetchWeek('thisweek')
+    let nextWeek = []
+    try { const n = await fetchWeek('nextweek'); if (Array.isArray(n)) nextWeek = n } catch {}
+    return { raw: [...thisWeek, ...nextWeek], via: 'прямой источник' }
+  } catch (e) { errors.push('прямой: ' + e.message) }
+  throw new Error(errors.join(' || '))
 }
 
 export function parseNews(raw) {
@@ -74,12 +99,10 @@ export async function getNews() {
   if (cache.ts && now - cache.ts < TTL) return cache.items
   if (cache.failedAt && now - cache.failedAt < Math.min(RETRY_MIN * 2 ** (cache.fails - 1), RETRY_MAX)) return cache.items
   try {
-    const thisWeek = await fetchWeek('thisweek')
-    let nextWeek = []
-    try { const n = await fetchWeek('nextweek'); if (Array.isArray(n)) nextWeek = n } catch {}
-    const items = parseNews([...thisWeek, ...nextWeek])
+    const { raw, via } = await loadRaw()
+    const items = parseNews(raw)
     cache = { ts: now, failedAt: 0, fails: 0, items, loaded: true }
-    console.log(`[news] загружено красных новостей: ${items.length}`)
+    console.log(`[news] загружено красных новостей: ${items.length} (${via})`)
     await redis(['SET', NEWS_KEY, JSON.stringify({ ts: now, items })])
   } catch (e) {
     cache.failedAt = now

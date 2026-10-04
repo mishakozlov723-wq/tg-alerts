@@ -62,6 +62,7 @@ const save = () => {
   try { fs.writeFileSync(DB_FILE, JSON.stringify(db)) } catch {}
   if (USE_REDIS) { dirty = true; flush() }
 }
+const MAX_ALERTS = 10
 const cleanNote = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
 const defaultSettings = () => ({ lead: [15, 5], currencies: ['USD', 'EUR', 'GBP'] })
 
@@ -145,9 +146,35 @@ const tg = async (method, payload, ms = 15000) => {
   })
   return r.json()
 }
+const dirSym = (d) => (d === 'above' ? '▲' : '▼')
+function alertsView(uid) {
+  const list = db.alerts.filter((a) => a.userId === uid && a.status === 'active')
+  const text = list.length
+    ? `Your active alerts (${list.length}/${MAX_ALERTS}):\n\n` + list.map((a, i) => `${i + 1}. ${a.symbol} ${dirSym(a.dir)} ${a.level}${a.note ? ' · ' + a.note : ''}`).join('\n')
+    : 'No active alerts yet.'
+  const rows = list.map((a) => [{ text: `✕ ${a.symbol} ${dirSym(a.dir)} ${a.level}`, callback_data: `del:${a.id}` }])
+  rows.push([{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }])
+  return { text, reply_markup: { inline_keyboard: rows } }
+}
 async function handleUpdate(u) {
+  if (u.callback_query) {
+    const q = u.callback_query, uid = String(q.from.id)
+    const m = q.data && q.data.match(/^del:(\d+)$/)
+    if (m) {
+      const before = db.alerts.length
+      db.alerts = db.alerts.filter((a) => !(a.id === Number(m[1]) && a.userId === uid))
+      if (db.alerts.length !== before) save()
+      await tg('answerCallbackQuery', { callback_query_id: q.id, text: 'Deleted' })
+      if (q.message) await tg('editMessageText', { chat_id: q.message.chat.id, message_id: q.message.message_id, ...alertsView(uid) })
+    } else await tg('answerCallbackQuery', { callback_query_id: q.id })
+    return
+  }
   const m = u.message
   if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
+  if (/^\/alerts(@\w+)?(\s|$)/i.test(m.text)) {
+    await tg('sendMessage', { chat_id: m.chat.id, ...alertsView(String(m.from.id)) })
+    return
+  }
   await tg('sendMessage', {
     chat_id: m.chat.id, text: WELCOME,
     reply_markup: { inline_keyboard: [[{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }]] },
@@ -156,11 +183,14 @@ async function handleUpdate(u) {
 async function pollTelegram() {
   if (!BOT_TOKEN || process.env.BOT_POLLING === 'off' || (MOCK && process.env.BOT_POLLING !== 'on')) return
   try { await tg('deleteWebhook', {}) } catch {}
+  try {
+    await tg('setMyCommands', { commands: [{ command: 'start', description: 'Open Alerts' }, { command: 'alerts', description: 'My active alerts' }] })
+  } catch {}
   console.log('[bot] жду сообщения в Telegram')
   let offset = 0
   for (;;) {
     try {
-      const j = await tg('getUpdates', { offset, timeout: 25, allowed_updates: ['message'] }, 35000)
+      const j = await tg('getUpdates', { offset, timeout: 25, allowed_updates: ['message', 'callback_query'] }, 35000)
       if (!j.ok) { await sleep(j.error_code === 409 ? 5000 : 3000); continue }
       for (const u of j.result) {
         offset = u.update_id + 1
@@ -198,6 +228,7 @@ const server = http.createServer(async (req, res) => {
     const b = await body(req)
     const level = Number(b.level)
     if (!SYMBOLS[b.symbol] || !['above', 'below'].includes(b.dir) || !isFinite(level)) return json(res, 400, { error: 'bad input' })
+    if (db.alerts.filter((x) => x.userId === uid && x.status === 'active').length >= MAX_ALERTS) return json(res, 400, { error: 'limit', max: MAX_ALERTS })
     const a = { id: db.seq++, userId: uid, symbol: b.symbol, dir: b.dir, level, note: cleanNote(b.note), status: 'active', createdAt: Date.now() }
     db.alerts.push(a); save(); return json(res, 200, a)
   }
@@ -236,5 +267,34 @@ const server = http.createServer(async (req, res) => {
 
 startPrices(onTick)
 pollTelegram()
+
+// ---------- защита от потери цен: если поток замолчал при открытом рынке, пишем тем, у кого есть активные алерты ----------
+const STALE_MS = Number(process.env.PRICE_STALE_MIN || 10) * 60e3
+const BOOT = Date.now()
+let feedDown = false
+function marketOpen(d = new Date()) {
+  if (process.env.FORCE_MARKET_OPEN) return true
+  const day = d.getUTCDay(), h = d.getUTCHours() // вс=0 ... сб=6
+  if (day === 6) return false
+  if (day === 5 && h >= 21) return false
+  if (day === 0 && h < 22) return false
+  return true
+}
+async function watchPrices() {
+  const now = Date.now()
+  if (!marketOpen()) { if (feedDown) feedDown = false; return }
+  const stale = Object.keys(SYMBOLS).filter((s) => now - Math.max(prices[s]?.ts || 0, prices[s]?.dataTs || 0, BOOT) > STALE_MS)
+  const users = [...new Set(db.alerts.filter((a) => a.status === 'active').map((a) => a.userId))]
+  if (stale.length && !feedDown) {
+    feedDown = true
+    console.error('[prices] нет новых цен:', stale.join(', '))
+    for (const u of users) await notify(u, '⚠️ Price feed lost (' + stale.join(', ') + '). Your alerts will not fire until it is back. I will tell you when it recovers.')
+  } else if (!stale.length && feedDown) {
+    feedDown = false
+    console.log('[prices] цены снова идут')
+    for (const u of users) await notify(u, '✅ Price feed is back. Alerts are working again.')
+  }
+}
+setInterval(() => watchPrices().catch((e) => console.error('[watch]', e.message)), Number(process.env.WATCHDOG_MS || 30000))
 setInterval(() => checkNews().catch((e) => console.error('[news]', e.message)), 20000)
 server.listen(PORT, () => console.log(`Open in browser: http://localhost:${PORT}`))

@@ -1,0 +1,15 @@
+{
+  "name": "tg-alerts",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node check.js"
+  },
+  "dependencies": {
+    "dukascopy-node": "^1.45.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#191919">
+<title>Alerts</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@200;300;400;500;600&family=Outfit:wght@200;300;400&display=swap" rel="stylesheet">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#191919;--txt:#f2f2f0;--mut:rgba(255,255,255,.5);--faint:rgba(255,255,255,.22);--line:rgba(255,255,255,.11);--r:14px;--num:'Outfit','Poppins',-apple-system,'Segoe UI',sans-serif}
+.price,.asset span,input[type=number],.num{font-family:var(--num)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0}
+html,body{background:var(--bg)}
+body{color:var(--txt);font-family:'Poppins',-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:400;padding-bottom:96px;-webkit-font-smoothing:antialiased}
+button,input{font-family:inherit;color:inherit}
+button{cursor:pointer}
+.wrap{max-width:460px;margin:0 auto;padding:40px 24px 24px}
+.eyebrow{font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--mut);font-weight:500}
+h1{font-size:30px;font-weight:300;letter-spacing:-.015em;margin:8px 0 32px}
+.hide{display:none}
+
+/* assets: plain text tabs */
+.assets{display:flex;gap:28px;border-bottom:1px solid var(--line)}
+.asset{background:none;border:0;padding:0 0 16px;text-align:left;position:relative;opacity:.38;transition:.2s}
+.asset b{display:block;font-size:15px;font-weight:500;letter-spacing:.02em}
+.asset span{display:block;margin-top:4px;font-size:12px;font-weight:300;font-variant-numeric:tabular-nums}
+.asset.on{opacity:1}
+.asset.on::after{content:'';position:absolute;left:0;bottom:-1px;width:100%;height:2px;border-radius:2px;background:var(--txt)}
+
+/* ticket: no card */
+.card{padding:0}
+.price{font-size:76px;font-weight:200;letter-spacing:-.04em;font-variant-numeric:tabular-nums;line-height:1;margin-top:40px}
+.psub{font-size:11px;color:var(--mut);letter-spacing:.22em;text-transform:uppercase;margin:12px 0 44px;font-weight:500}
+
+.dir{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:28px}
+.dir button{background:none;border:1px solid var(--line);border-radius:var(--r);padding:15px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:500;color:var(--mut);transition:.2s}
+.dir button.on{border-color:var(--txt);color:var(--txt)}
+
+.field{border-bottom:1px solid var(--line);padding:0 0 10px;transition:.2s}
+.field:focus-within{border-color:var(--txt)}
+.field label{display:block;font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--mut);font-weight:500}
+input[type=number]{width:100%;background:none;border:0;padding:8px 0 0;font-size:40px;font-weight:200;color:var(--txt);outline:none;font-variant-numeric:tabular-nums;-moz-appearance:textfield;appearance:textfield}
+input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;appearance:none;margin:0;display:none}
+input::placeholder{color:var(--faint)}
+.chips{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:20px 0 36px}
+.chip{background:none;border:1px solid var(--line);border-radius:var(--r);padding:12px 0;font-size:12px;font-weight:400;color:var(--mut);transition:.15s}
+.chip:active{border-color:var(--txt);color:var(--txt)}
+
+/* the only filled element */
+.cta{width:100%;padding:18px;background:var(--txt);color:#191919;border:0;border-radius:18px;font-size:12px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;transition:.15s}
+.cta:active{transform:scale(.99);opacity:.88}
+
+/* lists: hairline rows */
+.item{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:22px 0;border-bottom:1px solid var(--line)}
+.item:first-child{border-top:1px solid var(--line)}
+.item .t{font-size:15px;font-weight:500}
+.item .t em{font-style:normal;font-weight:300;color:var(--mut);margin-left:8px}
+.item small{display:block;margin-top:6px;font-size:12px;font-weight:300;color:var(--mut)}
+.item.done{opacity:.4}
+.x{background:none;border:1px solid var(--line);border-radius:12px;width:40px;height:40px;font-size:12px;color:var(--mut);flex:none;transition:.15s}
+.x:active{border-color:var(--txt);color:var(--txt)}
+.empty{color:var(--mut);font-weight:300;font-size:14px;padding:24px 0}
+.dotr{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--txt);margin-right:10px;vertical-align:middle}
+
+/* options */
+.lbl{margin:0 0 14px}
+.opt{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:32px}
+.opt button{background:none;border:1px solid var(--line);border-radius:12px;padding:9px 16px;font-size:12px;font-weight:500;color:var(--mut);min-height:40px;min-width:48px;transition:.2s}
+.opt button.on{border-color:var(--txt);color:var(--txt)}
+
+/* nav */
+.tabs{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:center;background:rgba(25,25,25,.92);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+.tabs div{display:flex;width:100%;max-width:460px}
+.tabs button{flex:1;padding:22px 0 20px;background:none;border:0;font-size:11px;letter-spacing:.2em;text-transform:uppercase;font-weight:500;color:var(--faint);position:relative;transition:.2s}
+.tabs button.on{color:var(--txt)}
+.tabs button.on::after{content:'';position:absolute;bottom:9px;left:50%;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:var(--txt)}
+
+/* test panel */
+.dbg{margin-top:36px;padding:16px;border:1px dashed var(--line);border-radius:var(--r)}
+.dbg p{font-size:10px;color:var(--mut);letter-spacing:.16em;text-transform:uppercase;margin-bottom:12px;font-weight:500}
+.dbg button{margin:0 6px 6px 0;padding:9px 13px;border:1px solid var(--line);border-radius:12px;background:none;font-size:12px;color:var(--mut)}
+
+#toast{position:fixed;top:16px;left:16px;right:16px;max-width:428px;margin:auto;background:#2b2b2b;border:1px solid var(--line);color:var(--txt);border-radius:var(--r);padding:16px 20px;font-size:13px;font-weight:500;white-space:pre-line;display:none;z-index:9;box-shadow:0 12px 40px rgba(0,0,0,.45)}
+:focus-visible{outline:1px solid var(--txt);outline-offset:3px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+#splash{position:fixed;inset:0;z-index:100;overflow:hidden;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity 1s ease,visibility 1s}
+#introStage{position:absolute;inset:0}
+#splash.out{opacity:0;visibility:hidden;pointer-events:none}
+.sp-word{font-family:var(--num);font-weight:200;font-size:46px;letter-spacing:.02em;opacity:0;filter:blur(14px);transform:translateY(10px) scale(.98);animation:spIn 1.6s cubic-bezier(.22,.61,.36,1) .3s forwards}
+.sp-sub{font-size:11px;letter-spacing:.34em;text-transform:uppercase;color:var(--mut);margin-top:16px;opacity:0;animation:spFade 1.4s ease 1s forwards}
+.sp-line{width:132px;height:1px;background:var(--line);margin-top:38px;position:relative;overflow:hidden;opacity:0;animation:spFade .9s ease .8s forwards}
+.sp-line::after{content:'';position:absolute;inset:0;background:#fff;transform:translateX(-101%);animation:spBar 2s cubic-bezier(.65,0,.35,1) 1s forwards}
+@keyframes spIn{to{opacity:1;filter:blur(0);transform:none}}
+@keyframes spFade{to{opacity:1}}
+@keyframes spBar{to{transform:translateX(0)}}
+.rise{opacity:0;transform:translateY(16px);transition:opacity 1.1s cubic-bezier(.22,.61,.36,1),transform 1.1s cubic-bezier(.22,.61,.36,1);transition-delay:var(--d,0s)}
+body.ready .rise{opacity:1;transform:none}
+.tabs.rise{transform:none}
+.enter{animation:secIn 1.1s cubic-bezier(.22,.61,.36,1) both;animation-delay:var(--d,0s)}
+@keyframes secIn{from{opacity:0;transform:translateY(16px)}}
+</style>
+</head>
+<body>
+<div id="splash"><div id="introStage"></div></div>
+<div id="toast"></div>
+<div class="wrap">
+  <section id="p-new">
+    <div class="eyebrow">New alert</div>
+    <h1>Set a level.</h1>
+    <div class="assets" id="tiles"></div>
+    <div class="card">
+      <div class="price" id="price">—</div>
+      <div class="psub" id="psub">&nbsp;</div>
+      <div class="dir">
+        <button class="on" id="d-above">▲ Above</button>
+        <button id="d-below">▼ Below</button>
+      </div>
+      <div class="field">
+        <label for="level">Price level</label>
+        <input type="number" id="level" step="any" inputmode="decimal" placeholder="0.00000">
+      </div>
+      <div class="chips" id="chips"></div>
+      <button class="cta" id="create">Create alert</button>
+    </div>
+    <div class="dbg hide" id="dbg">
+      <p>Test mode · simulated prices</p>
+      <div style="font-size:12px;font-weight:300;color:var(--mut);margin:-4px 0 12px;line-height:1.5">Prices here are fake. These buttons push the selected asset up or down so you can check that alerts fire.</div>
+      <button data-p="-20">−20 pips</button><button data-p="-5">−5</button><button data-p="5">+5</button><button data-p="20">+20 pips</button><button data-p="50">+50</button>
+    </div>
+  </section>
+
+  <section id="p-alerts" class="hide">
+    <div class="eyebrow">Alerts</div>
+    <h1>Your levels.</h1>
+    <div id="alist"></div>
+  </section>
+
+  <section id="p-news" class="hide">
+    <div class="eyebrow">High impact</div>
+    <h1>News.</h1>
+    <div class="eyebrow lbl">Notify before (min)</div>
+    <div class="opt" id="lead"></div>
+    <div class="eyebrow lbl">Currencies</div>
+    <div class="opt" id="cur"></div>
+    <div id="nlist"></div>
+  </section>
+</div>
+
+<nav class="tabs"><div>
+  <button class="on" data-t="new">New</button>
+  <button data-t="alerts">Alerts</button>
+  <button data-t="news">News</button>
+</div></nav>
+
+<script src="/intro.js"></script>
+<script>
+const tg = window.Telegram?.WebApp
+if (tg?.initData) {
+  tg.ready(); tg.expand()
+  try { tg.setHeaderColor('#191919'); tg.setBackgroundColor('#191919'); tg.setBottomBarColor?.('#191919') } catch {}
+}
+const $ = (s) => document.querySelector(s)
+const H = { 'content-type': 'application/json' }
+if (tg?.initData) H['x-init-data'] = tg.initData
+const api = (u, o = {}) => fetch(u, { ...o, headers: { ...H, ...(o.headers || {}) } }).then((r) => r.json())
+
+const shown = {}
+let cfg, prices = {}, sym = 'EURUSD', dir = 'above', settings = { lead: [], currencies: [] }, lastEvent = 0
+const fmt = (s, v) => (v == null ? '—' : Number(v).toFixed(cfg.symbols[s].digits))
+
+// tab switching: fade the old page out, load the new page's data while hidden, then reveal it in one go
+let curTab = 'new', switching = false
+function enter(sec) {
+  const targets = []
+  ;[...sec.children].forEach((c) => (c.id === 'alist' || c.id === 'nlist' ? targets.push(...c.children) : targets.push(c)))
+  targets.forEach((el, i) => { el.style.setProperty('--d', (0.05 + Math.min(i, 9) * 0.08) + 's'); el.classList.add('enter') })
+  setTimeout(() => targets.forEach((el) => { el.classList.remove('enter'); el.style.removeProperty('--d') }), 2300)
+}
+async function goTab(t, btn) {
+  if (t === curTab || switching) return
+  switching = true
+  document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('on', x === btn))
+  const old = $('#p-' + curTab)
+  old.style.transition = 'opacity .28s ease'
+  old.style.opacity = 0
+  try {
+    await Promise.all([t === 'alerts' ? loadAlerts() : t === 'news' ? loadNews() : null, new Promise((r) => setTimeout(r, 300))])
+  } catch (e) { console.error(e) }
+  old.classList.add('hide'); old.style.opacity = ''; old.style.transition = ''
+  const sec = $('#p-' + t)
+  sec.classList.remove('hide')
+  window.scrollTo(0, 0)
+  enter(sec)
+  curTab = t
+  switching = false
+}
+document.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => goTab(b.dataset.t, b)))
+
+function renderTiles() {
+  $('#tiles').innerHTML = Object.keys(cfg.symbols).map((s) =>
+    `<button class="asset ${s === sym ? 'on' : ''}" data-s="${s}"><b>${s}</b><span>${fmt(s, shown[s])}</span></button>`).join('')
+  $('#tiles').querySelectorAll('.asset').forEach((t) => t.onclick = () => { sym = t.dataset.s; renderTiles(); renderPrice(); renderChips(); $('#level').value = '' })
+}
+function renderPrice() { $('#price').textContent = fmt(sym, shown[sym]); $('#psub').textContent = sym + ' · live' }
+// smooth count to a new value in the Price level field
+let levelAnim = 0
+function animateLevel(target, dur = 2200, clearAtEnd = false) {
+  cancelAnimationFrame(levelAnim)
+  const digits = cfg.symbols[sym].digits
+  const cur = parseFloat($('#level').value)
+  const from = isFinite(cur) ? cur : (shown[sym] ?? target)
+  const t0 = performance.now()
+  const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2)
+  const step = (now) => {
+    const x = Math.min(1, (now - t0) / dur)
+    $('#level').value = (from + (target - from) * ease(x)).toFixed(digits)
+    if (x < 1) levelAnim = requestAnimationFrame(step)
+    else if (clearAtEnd) $('#level').value = ''
+  }
+  levelAnim = requestAnimationFrame(step)
+}
+$('#level').addEventListener('input', () => cancelAnimationFrame(levelAnim))
+
+function renderChips() {
+  const pip = cfg.symbols[sym].pip
+  $('#chips').innerHTML = [10, 20, 50, 100].map((n) => `<button class="chip" data-n="${n}">${dir === 'above' ? '+' : '−'}${n}</button>`).join('')
+  $('#chips').querySelectorAll('.chip').forEach((c) => c.onclick = () => {
+    const p = prices[sym]?.price; if (p == null) return
+    animateLevel(p + (dir === 'above' ? 1 : -1) * Number(c.dataset.n) * pip)
+  })
+}
+$('#d-above').onclick = () => setDir('above'); $('#d-below').onclick = () => setDir('below')
+function setDir(d) { dir = d; $('#d-above').classList.toggle('on', d === 'above'); $('#d-below').classList.toggle('on', d === 'below'); renderChips() }
+
+$('#create').onclick = async () => {
+  const level = parseFloat($('#level').value)
+  if (!isFinite(level)) return toast('Enter a price level')
+  const r = await api('/api/alerts', { method: 'POST', body: JSON.stringify({ symbol: sym, dir, level }) })
+  if (r.error) return toast('Error: ' + r.error)
+  toast(`Alert set · ${sym} ${dir} ${level}`); animateLevel(0, 2300, true)
+}
+
+async function loadAlerts() {
+  const list = await api('/api/alerts')
+  $('#alist').innerHTML = list.length ? list.map((a) => `
+    <div class="item ${a.status === 'active' ? '' : 'done'}"><div>
+      <div class="t">${a.symbol}<em>${a.dir === 'above' ? '▲ above' : '▼ below'}</em></div>
+      <div class="t" class="num" style="font-weight:200;font-size:26px;margin-top:2px">${a.level}</div>
+      <small>${a.status === 'active' ? 'Active' : 'Triggered ' + new Date(a.firedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' at ' + a.firedPrice}</small></div>
+      <button class="x" data-id="${a.id}" aria-label="Delete alert">✕</button></div>`).join('') : '<div class="empty">No alerts yet.</div>'
+  $('#alist').querySelectorAll('.x').forEach((b) => b.onclick = async () => { await api('/api/alerts/' + b.dataset.id, { method: 'DELETE' }); loadAlerts() })
+}
+
+async function loadNews() {
+  settings = await api('/api/settings')
+  $('#lead').innerHTML = [30, 15, 5, 1].map((m) => `<button data-m="${m}" class="${settings.lead.includes(m) ? 'on' : ''}">${m}</button>`).join('')
+  $('#cur').innerHTML = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'NZD'].map((c) => `<button data-c="${c}" class="${settings.currencies.includes(c) ? 'on' : ''}">${c}</button>`).join('')
+  const tog = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v])
+  $('#lead').querySelectorAll('button').forEach((b) => b.onclick = async () => { settings.lead = tog(settings.lead, +b.dataset.m); await api('/api/settings', { method: 'POST', body: JSON.stringify(settings) }); loadNews() })
+  $('#cur').querySelectorAll('button').forEach((b) => b.onclick = async () => { settings.currencies = tog(settings.currencies, b.dataset.c); await api('/api/settings', { method: 'POST', body: JSON.stringify(settings) }); loadNews() })
+  const news = (await api('/api/news')).filter((n) => n.time > Date.now() - 3600e3)
+  $('#nlist').innerHTML = news.length ? news.map((n) => `
+    <div class="item" style="${settings.currencies.includes(n.currency) ? '' : 'opacity:.35'}"><div>
+      <div class="t"><span class="dotr"></span>${n.currency}<em>${n.title}</em></div>
+      <small>${new Date(n.time).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}${n.forecast ? ' · forecast ' + n.forecast : ''}${n.previous ? ' · prev ' + n.previous : ''}</small></div></div>`).join('') : '<div class="empty">No upcoming news.</div>'
+}
+
+function toast(t) { const e = $('#toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => (e.style.display = 'none'), 5000) }
+
+// smooth glide of displayed prices toward the real ones
+let lastT = performance.now()
+const TAU = 1500 // ms per stage: bigger = slower, softer glide
+const mid = {} // two chained smoothers = soft start AND soft finish
+function frame(now) {
+  const dt = Math.min(100, now - lastT); lastT = now
+  const k0 = 1 - Math.exp(-dt / TAU)
+  for (const k in prices) {
+    if (shown[k] == null) continue
+    if (mid[k] == null) mid[k] = shown[k]
+    mid[k] += (prices[k].price - mid[k]) * k0
+    const d = mid[k] - shown[k]
+    shown[k] = Math.abs(prices[k].price - shown[k]) < cfg.symbols[k].pip * 0.02 ? prices[k].price : shown[k] + d * k0
+  }
+  $('#price').textContent = fmt(sym, shown[sym])
+  document.querySelectorAll('.asset').forEach((t) => (t.querySelector('span').textContent = fmt(t.dataset.s, shown[t.dataset.s])))
+  requestAnimationFrame(frame)
+}
+
+async function tick() {
+  prices = await api('/api/prices')
+  for (const k in prices) if (shown[k] == null) shown[k] = prices[k].price
+  const ev = await api('/api/events?since=' + lastEvent)
+  for (const e of ev) { lastEvent = Math.max(lastEvent, e.id); if (!tg?.initData) toast(e.text); if (!$('#p-alerts').classList.contains('hide')) loadAlerts() }
+}
+
+// intro: splash plays at least MIN ms, then fades out and the app rises in
+document.querySelectorAll('#p-new > *, .tabs').forEach((el, i) => { el.classList.add('rise'); el.style.setProperty('--d', (0.2 + i * 0.1) + 's') })
+let revealed = false
+function reveal() {
+  if (revealed) return; revealed = true
+  $('#splash').classList.add('out')
+  document.body.classList.add('ready')
+  setTimeout(() => $('#splash').remove(), 1400)
+}
+const introDone = window.playIntro($('#introStage'), 'combo').catch(() => {})
+let appOk
+const appReady = new Promise((r) => (appOk = r))
+function whenReady() { appOk() }
+Promise.all([introDone, appReady]).then(() => setTimeout(reveal, 200))
+setTimeout(reveal, 15000)
+
+function showErr(e) {
+  const file = location.protocol === 'file:'
+  $('#tiles').innerHTML = `<div class="empty" style="line-height:1.6">${file ? 'You opened the file directly.' : 'Cannot reach the server.'}<br>Run <b>node server.js</b> in the project folder,<br>then open <b>http://localhost:3000</b></div>`
+  console.error(e)
+}
+
+;(async () => { try {
+  cfg = await api('/api/config')
+  prices = await api('/api/prices')
+  for (const k in prices) shown[k] = prices[k].price
+  const old = await api('/api/events?since=0'); lastEvent = old.reduce((m, e) => Math.max(m, e.id), 0)
+  await api('/api/settings')
+  renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)
+  if (cfg.mock) {
+    $('#dbg').classList.remove('hide')
+    $('#dbg').querySelectorAll('button').forEach((b) => b.onclick = () => { api('/api/debug/move', { method: 'POST', body: JSON.stringify({ symbol: sym, pips: +b.dataset.p }) }); toast(`${sym} ${+b.dataset.p > 0 ? '+' : ''}${b.dataset.p} pips`) })
+  }
+  setInterval(() => tick().catch(() => {}), 400)
+  whenReady()
+} catch (e) { showErr(e); whenReady() } })()
+</script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Intro variants</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@200;300;400;500&family=Outfit:wght@200;300;400&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#191919;--txt:#f2f2f0;--mut:rgba(255,255,255,.5);--line:rgba(255,255,255,.11)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:Poppins,sans-serif;padding:32px 20px 60px;display:flex;flex-direction:column;align-items:center;gap:22px}
+h1{font-weight:300;font-size:26px;margin:0}
+p{margin:0;color:var(--mut);font-size:13px;font-weight:300}
+.stage{position:relative;width:390px;max-width:100%;height:520px;border:1px solid var(--line);border-radius:22px;background:var(--bg);overflow:hidden}
+.row{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:520px}
+button{font:inherit;font-size:12px;font-weight:300;letter-spacing:.04em;color:var(--mut);background:transparent;border:1px solid var(--line);border-radius:14px;padding:10px 14px;cursor:pointer;transition:color .3s,border-color .3s}
+button:hover{color:var(--txt)}
+button.on{color:var(--txt);border-color:rgba(255,255,255,.7)}
+</style>
+</head><body>
+<h1>Intro variants</h1>
+<p>Click a variant to play it. The first one is what the app uses now.</p>
+<div class="stage" id="stage"></div>
+<div class="row" id="row"></div>
+<script src="/intro.js"></script>
+<script>
+const V = [
+  ['combo', '1+5 \u00b7 Digits \u2192 letters (in app)'],
+  ['letters', '1 \u00b7 Letters rise'],
+  ['scatter', '2 \u00b7 Scatter & assemble'],
+  ['line', '3 \u00b7 Line opens'],
+  ['outline', '4 \u00b7 Outline \u2192 fill'],
+  ['digits', '5 \u00b7 Digits \u2192 blur-in'],
+  ['words', '6 \u00b7 Set. Track. Trade. \u2192 name'],
+]
+let token = 0
+function play(name, btn) {
+  document.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === btn))
+  const t = ++token
+  const stage = document.getElementById('stage')
+  window.playIntro(stage, name)
+}
+V.forEach(([n, label], i) => {
+  const b = document.createElement('button')
+  b.textContent = label
+  b.onclick = () => play(n, b)
+  document.getElementById('row').appendChild(b)
+  if (i === 0) setTimeout(() => play(n, b), 400)
+})
+</script>
+</body></html>

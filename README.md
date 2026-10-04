@@ -1,0 +1,22 @@
+# TG Alerts (Mini App)
+
+## Запуск с реальными ценами и новостями
+1. Установи Node.js (LTS) с nodejs.org
+2. В папке проекта: `npm install`
+3. Скопируй `.env.example` в `.env` (в нём уже PRICE_SOURCE=dukascopy)
+4. Проверь источники: `npm run check` — покажет цены EURUSD/GBPUSD/DXY и ближайшие красные новости
+5. Запуск: `node server.js`, открой http://localhost:3000
+
+## Котировки OANDA (как на твоём графике)
+1. Демо-счёт OANDA (fxTrade Practice) -> личный кабинет -> Manage API Access -> Generate token
+2. В `.env`: `PRICE_SOURCE=oanda`, `OANDA_TOKEN=твой_токен`, `OANDA_ENV=practice`
+3. `npm run check`
+
+## Тестовый режим (без интернета)
+В `.env` поставь PRICE_SOURCE=mock (и при желании NEWS_SOURCE=mock). Внизу появится панель, которая двигает цену.
+
+## Telegram
+1. @BotFather -> /newbot -> токен в BOT_TOKEN
+2. Задеплой на сервер с HTTPS (Railway/Fly/VPS + домен)
+3. @BotFather -> /newapp или Menu Button -> адрес сайта
+4. Нажми /start у бота хотя бы раз, чтобы он мог писать тебе

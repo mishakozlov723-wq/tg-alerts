@@ -6,10 +6,14 @@ import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { SYMBOLS, prices, startPrices, setPrice } from './prices.js'
 import { getNews } from './news.js'
+import { verifyAccessToken } from './shared/access-token.mjs'
 
 const __dir = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT || 3000)
 const BOT_TOKEN = process.env.BOT_TOKEN || ''
+const ACCESS_SIGNING_SECRET = process.env.ACCESS_SIGNING_SECRET || ''
+const AUTH_API_URL = process.env.AUTH_API_URL || ''
+const REQUIRE_ACCESS = process.env.REQUIRE_ACCESS === 'true' || Boolean(ACCESS_SIGNING_SECRET)
 const MOCK = (process.env.PRICE_SOURCE || 'mock') === 'mock'
 const DB_FILE = process.env.DB_FILE || path.join(__dir, 'data.json')
 
@@ -119,6 +123,9 @@ async function checkNews() {
 
 // ---------- авторизация: Telegram initData или браузер ----------
 function getUserId(req) {
+  const access = verifyAccessToken(req.headers['x-access-token'], 'alerts', ACCESS_SIGNING_SECRET)
+  if (access) return String(access.sub)
+  if (REQUIRE_ACCESS) return null
   const init = req.headers['x-init-data']
   if (init && BOT_TOKEN) {
     const p = new URLSearchParams(init)
@@ -216,9 +223,10 @@ const server = http.createServer(async (req, res) => {
     return res.end(fs.readFileSync(f))
   }
 
-  if (p === '/api/config') return json(res, 200, { mock: MOCK, symbols: Object.fromEntries(Object.entries(SYMBOLS).map(([k, v]) => [k, { pip: v.pip, digits: v.digits }])) })
-  if (p === '/api/prices') return json(res, 200, prices)
-  if (p === '/api/news') return json(res, 200, await getNews())
+  if (p === '/api/config') return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: Object.fromEntries(Object.entries(SYMBOLS).map(([k, v]) => [k, { pip: v.pip, digits: v.digits }])) })
+  if (p === '/api/prices') { const uid = getUserId(req); if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' }); return json(res, 200, prices) }
+  if (p === '/api/news') { const uid = getUserId(req); if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' }); return json(res, 200, await getNews()) }
+  if (p === '/api/access/check') { const uid = getUserId(req); return uid ? json(res, 200, { ok: true, userId: uid }) : json(res, 401, { error: 'access_required' }) }
 
   const uid = getUserId(req)
   if (!uid) return json(res, 401, { error: 'unauthorized' })
@@ -298,3 +306,6 @@ async function watchPrices() {
 setInterval(() => watchPrices().catch((e) => console.error('[watch]', e.message)), Number(process.env.WATCHDOG_MS || 30000))
 setInterval(() => checkNews().catch((e) => console.error('[news]', e.message)), 20000)
 server.listen(PORT, () => console.log(`Open in browser: http://localhost:${PORT}`))
+
+
+

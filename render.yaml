@@ -21,3 +21,9 @@ services:
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
+      - key: AUTH_API_URL
+        sync: false
+      - key: ACCESS_SIGNING_SECRET
+        sync: false
+      - key: REQUIRE_ACCESS
+        value: true

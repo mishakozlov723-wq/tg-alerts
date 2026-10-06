@@ -108,7 +108,7 @@
     await tail(stage)
   }
 
-  // 5a) digits count up like a price, then dissolve upwards
+  // 5a) digits count up like a price, then dissolve upwards (not used by the app any more)
   async function digits(stage) {
     const d = el('div', 'in-digits', stage, '0.00000')
     d.style.opacity = 0
@@ -147,7 +147,7 @@
   }
 
   const VARIANTS = {
-    combo: async (s) => { await digits(s); await lettersRise(s) }, // 1 + 5
+    combo: (s) => lettersRise(s), // app intro: no counting digits, just Alerts + EUR/GBP/DXY + progress line
     letters: (s) => lettersRise(s),
     scatter,
     line: lineOpens,

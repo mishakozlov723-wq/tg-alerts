@@ -16,13 +16,14 @@ const AUTH_API_URL = process.env.AUTH_API_URL || ''
 const REQUIRE_ACCESS = process.env.REQUIRE_ACCESS === 'true' || Boolean(ACCESS_SIGNING_SECRET)
 const MOCK = (process.env.PRICE_SOURCE || 'mock') === 'mock'
 const DB_FILE = process.env.DB_FILE || path.join(__dir, 'data.json')
+const ADMIN_CHAT_ID = String(process.env.ADMIN_CHAT_ID || '1011596614')
 
-// ---------- простая JSON-база ----------
+// ---------- simple JSON db ----------
 let db = { alerts: [], settings: {}, events: [], sentNews: {}, seq: 1 }
 try { db = { ...db, ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) } } catch {}
 
-// Бесплатный хостинг теряет файлы при перезапуске, поэтому алерты можно хранить в Upstash Redis (бесплатно).
-// Если UPSTASH_* не заданы, работает обычный файл data.json.
+// Free hosting loses files on restart, so alerts can be stored in Upstash Redis (free).
+// If UPSTASH_* is not set, the plain data.json file is used.
 const REDIS_URL = (process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/$/, '')
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || ''
 const USE_REDIS = Boolean(REDIS_URL && REDIS_TOKEN)
@@ -41,10 +42,10 @@ if (USE_REDIS) {
   try {
     const raw = await redis(['GET', REDIS_KEY])
     if (raw) db = { ...db, ...JSON.parse(raw) }
-    console.log('[db] алерты хранятся в Upstash Redis')
+    console.log('[db] alerts are stored in Upstash Redis')
   } catch (e) {
-    // если не прочитали, не стартуем, чтобы не затереть базу пустой
-    console.error('[db] не удалось прочитать базу из Redis:', e.message)
+    // if the read failed, do not start so we never overwrite the db with an empty one
+    console.error('[db] could not read the database from Redis:', e.message)
     process.exit(1)
   }
 }
@@ -55,7 +56,7 @@ const flush = async () => {
   while (dirty) {
     dirty = false
     try { await redis(['SET', REDIS_KEY, JSON.stringify(db)]) } catch (e) {
-      console.error('[db] запись в Redis не удалась, повторяю:', e.message)
+      console.error('[db] Redis write failed, retrying:', e.message)
       dirty = true
       await new Promise((r) => setTimeout(r, 3000))
     }
@@ -70,7 +71,7 @@ const MAX_ALERTS = 10
 const cleanNote = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
 const defaultSettings = () => ({ lead: [15, 5], currencies: ['USD', 'EUR', 'GBP'] })
 
-// ---------- уведомления ----------
+// ---------- notifications ----------
 async function notify(userId, text) {
   db.events.push({ id: db.seq++, userId, text, ts: Date.now() })
   if (db.events.length > 500) db.events.splice(0, db.events.length - 500)
@@ -86,7 +87,7 @@ async function notify(userId, text) {
   }
 }
 
-// ---------- проверка алертов на каждый тик ----------
+// ---------- check alerts on every tick ----------
 function onTick(sym, price) {
   let changed = false
   for (const a of db.alerts) {
@@ -100,7 +101,7 @@ function onTick(sym, price) {
   if (changed) save()
 }
 
-// ---------- уведомления о новостях ----------
+// ---------- news notifications ----------
 async function checkNews() {
   const items = await getNews()
   const now = Date.now()
@@ -121,7 +122,7 @@ async function checkNews() {
   }
 }
 
-// ---------- авторизация: Telegram initData или браузер ----------
+// ---------- auth: signed access token or Telegram initData ----------
 function getUserId(req) {
   const access = verifyAccessToken(req.headers['x-access-token'], 'alerts', ACCESS_SIGNING_SECRET)
   if (access) return String(access.sub)
@@ -136,12 +137,12 @@ function getUserId(req) {
     if (calc === hash) { try { return String(JSON.parse(p.get('user')).id) } catch {} }
     return null
   }
-  // без токена (режим теста в браузере)
-  if (!BOT_TOKEN) return String(req.headers['x-user-id'] || 'browser')
+  // local mock mode only (no BOT_TOKEN and nothing configured): never trust a client-supplied id in production
+  if (!BOT_TOKEN && MOCK && !REQUIRE_ACCESS && !process.env.RENDER) return String(req.headers['x-user-id'] || 'browser')
   return null
 }
 
-// ---------- Telegram-бот: приветствие и кнопки под полем ввода ----------
+// ---------- Telegram bot: welcome and keyboard under the input field ----------
 const TG_API = process.env.TG_API || 'https://api.telegram.org'
 const WEBAPP_URL = process.env.WEBAPP_URL || process.env.RENDER_EXTERNAL_URL || 'https://tg-alerts-2khy.onrender.com'
 const WELCOME = 'Price alerts for EURUSD, GBPUSD and DXY.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.\n\nTap the button below to open.'
@@ -159,6 +160,20 @@ const tg = async (method, payload, ms = 15000) => {
   })
   return r.json()
 }
+
+// ---------- admin messages to the owner in Telegram ----------
+const lastAdmin = new Map()
+async function adminNotify(text, key = text, minGapMs = 0) {
+  console.log('[admin]', text)
+  if (!BOT_TOKEN || !ADMIN_CHAT_ID) return
+  const now = Date.now()
+  if (minGapMs && now - (lastAdmin.get(key) || 0) < minGapMs) return
+  lastAdmin.set(key, now)
+  try { await tg('sendMessage', { chat_id: ADMIN_CHAT_ID, text: `[tg-alerts] ${text}` }, 10000) } catch {}
+}
+process.on('uncaughtException', (e) => { console.error('[fatal]', e); adminNotify(`Error: ${e && e.message}`, 'err', 300000) })
+process.on('unhandledRejection', (e) => { console.error('[unhandled]', e); adminNotify(`Error: ${e && e.message}`, 'err', 300000) })
+
 const dirSym = (d) => (d === 'above' ? '▲' : '▼')
 function alertsView(uid) {
   const list = db.alerts.filter((a) => a.userId === uid && a.status === 'active')
@@ -196,7 +211,7 @@ async function pollTelegram() {
   try {
     await tg('setMyCommands', { commands: [{ command: 'start', description: 'Open Alerts' }, { command: 'alerts', description: 'My active alerts' }] })
   } catch {}
-  console.log('[bot] жду сообщения в Telegram')
+  console.log('[bot] waiting for Telegram messages')
   let offset = 0
   for (;;) {
     try {
@@ -266,7 +281,7 @@ const server = http.createServer(async (req, res) => {
     const since = Number(url.searchParams.get('since') || 0)
     return json(res, 200, db.events.filter((e) => e.userId === uid && e.id > since))
   }
-  // только в тестовом режиме: двигать цену вручную
+  // test mode only: move the price by hand
   if (p === '/api/debug/move' && MOCK) {
     const b = await body(req)
     const c = SYMBOLS[b.symbol]; if (!c || !prices[b.symbol]) return json(res, 400, { error: 'bad' })
@@ -279,13 +294,13 @@ const server = http.createServer(async (req, res) => {
 startPrices(onTick)
 pollTelegram()
 
-// ---------- защита от потери цен: если поток замолчал при открытом рынке, пишем тем, у кого есть активные алерты ----------
+// ---------- price loss guard: if the feed goes silent while the market is open, tell users with active alerts and the owner ----------
 const STALE_MS = Number(process.env.PRICE_STALE_MIN || 10) * 60e3
 const BOOT = Date.now()
 let feedDown = false
 function marketOpen(d = new Date()) {
   if (process.env.FORCE_MARKET_OPEN) return true
-  const day = d.getUTCDay(), h = d.getUTCHours() // вс=0 ... сб=6
+  const day = d.getUTCDay(), h = d.getUTCHours() // sun=0 ... sat=6
   if (day === 6) return false
   if (day === 5 && h >= 21) return false
   if (day === 0 && h < 22) return false
@@ -298,14 +313,19 @@ async function watchPrices() {
   const users = [...new Set(db.alerts.filter((a) => a.status === 'active').map((a) => a.userId))]
   if (stale.length && !feedDown) {
     feedDown = true
-    console.error('[prices] нет новых цен:', stale.join(', '))
+    console.error('[prices] no new prices:', stale.join(', '))
+    await adminNotify('⚠️ Price feed lost: ' + stale.join(', '), 'feed')
     for (const u of users) await notify(u, '⚠️ Price feed lost (' + stale.join(', ') + '). Your alerts will not fire until it is back. I will tell you when it recovers.')
   } else if (!stale.length && feedDown) {
     feedDown = false
-    console.log('[prices] цены снова идут')
+    console.log('[prices] prices are flowing again')
+    await adminNotify('✅ Price feed is back', 'feed')
     for (const u of users) await notify(u, '✅ Price feed is back. Alerts are working again.')
   }
 }
 setInterval(() => watchPrices().catch((e) => console.error('[watch]', e.message)), Number(process.env.WATCHDOG_MS || 30000))
 setInterval(() => checkNews().catch((e) => console.error('[news]', e.message)), 20000)
-server.listen(PORT, () => console.log(`Open in browser: http://localhost:${PORT}`))
+server.listen(PORT, () => {
+  console.log(`Open in browser: http://localhost:${PORT}`)
+  adminNotify('🟢 Service started', 'start', 60000)
+})

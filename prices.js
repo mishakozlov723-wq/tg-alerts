@@ -6,8 +6,9 @@ export const SYMBOLS = {
   // Dukascopy has several names for the dollar index, try them in turn.
   DXY: { pip: 0.01, digits: 3, base: 99.5, duka: [process.env.DUKA_DXY, 'dollaridxusd', 'usdidx'].filter(Boolean) },
   // Paid quotes: visible only to users who bought them. OFFSET_* shifts the price (in price units) to match your chart.
-  XAUUSD: { label: 'Gold', premium: true, pip: 0.1, digits: 2, base: 4000, oanda: 'XAU_USD', offset: Number(process.env.OFFSET_XAUUSD || 0), duka: [process.env.DUKA_XAUUSD || 'xauusd'] },
-  GER40: { label: 'GER40', premium: true, pip: 1, digits: 1, base: 25400, oanda: 'DE30_EUR', offset: Number(process.env.OFFSET_GER40 || 0), duka: [process.env.DUKA_GER40 || 'deuidxeur'] },
+  // OANDA_XAUUSD / OANDA_GER40 can override the OANDA instrument names.
+  XAUUSD: { label: 'Gold', premium: true, pip: 0.1, digits: 2, base: 4000, oanda: process.env.OANDA_XAUUSD || 'XAU_USD', offset: Number(process.env.OFFSET_XAUUSD || 0), duka: [process.env.DUKA_XAUUSD || 'xauusd'] },
+  GER40: { label: 'GER40', premium: true, pip: 1, digits: 1, base: 25400, oanda: process.env.OANDA_GER40 || 'DE30_EUR', offset: Number(process.env.OFFSET_GER40 || 0), duka: [process.env.DUKA_GER40 || 'deuidxeur'] },
 }
 
 export const prices = {} // { EURUSD: { price, ts, dataTs? } }
@@ -136,12 +137,26 @@ async function startOanda(onTick) {
   // Add paid instruments only if this account really offers them, so one missing instrument cannot break the others.
   const extra = []
   const wanted = Object.entries(SYMBOLS).filter(([, c]) => c.premium && c.oanda)
+  const tell = (text) => {
+    console.log('[oanda]', text)
+    const adminChat = process.env.ADMIN_CHAT_ID || '1011596614'
+    if (!process.env.BOT_TOKEN) return
+    fetch(`${process.env.TG_API || 'https://api.telegram.org'}/bot${process.env.BOT_TOKEN}/sendMessage`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: adminChat, text: '[tg-alerts] ' + text }),
+    }).catch(() => {})
+  }
   try {
     const ins = await get(`/v3/accounts/${account}/instruments`)
     const names = new Set((ins.instruments || []).map((i) => i.name))
     for (const [s, c] of wanted) { if (names.has(c.oanda)) extra.push(c.oanda); else feedStatus.missing.push(s) }
+    if (feedStatus.missing.length) {
+      const hints = [...names].filter((n) => /XAU|GOLD|DE30|DAX|GER|DE40|DEU/i.test(n))
+      tell(`OANDA account ${account} (${live ? 'live' : 'practice'}) offers ${names.size} instruments. Similar to gold/GER40: ${hints.join(', ') || 'none'}`)
+    }
   } catch (e) {
     console.error('[oanda] instrument list:', e.message)
+    tell('OANDA instrument list failed: ' + e.message)
     for (const [s] of wanted) feedStatus.missing.push(s)
   }
   const instrList = [...OANDA_PAIRS, ...extra].join(',')

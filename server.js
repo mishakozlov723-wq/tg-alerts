@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { SYMBOLS, prices, startPrices, setPrice } from './prices.js'
+import { SYMBOLS, prices, startPrices, setPrice, feedStatus } from './prices.js'
 import { getNews } from './news.js'
 import { verifyAccessToken } from './shared/access-token.mjs'
 
@@ -17,9 +17,11 @@ const REQUIRE_ACCESS = process.env.REQUIRE_ACCESS === 'true' || Boolean(ACCESS_S
 const MOCK = (process.env.PRICE_SOURCE || 'mock') === 'mock'
 const DB_FILE = process.env.DB_FILE || path.join(__dir, 'data.json')
 const ADMIN_CHAT_ID = String(process.env.ADMIN_CHAT_ID || '1011596614')
+const PREMIUM_PRICE = Number(process.env.PREMIUM_PRICE_RUB || 400)
+const PAY_DETAILS = process.env.PAY_DETAILS || ''
 
 // ---------- simple JSON db ----------
-let db = { alerts: [], settings: {}, events: [], sentNews: {}, seq: 1 }
+let db = { alerts: [], settings: {}, events: [], sentNews: {}, seq: 1, owned: {}, orders: {} }
 try { db = { ...db, ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) } } catch {}
 
 // Free hosting loses files on restart, so alerts can be stored in Upstash Redis (free).
@@ -49,6 +51,8 @@ if (USE_REDIS) {
     process.exit(1)
   }
 }
+if (!db.owned) db.owned = {}
+if (!db.orders) db.orders = {}
 let saving = false, dirty = false
 const flush = async () => {
   if (saving) return
@@ -70,6 +74,14 @@ const save = () => {
 const MAX_ALERTS = 10
 const cleanNote = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
 const defaultSettings = () => ({ lead: [15, 5], currencies: ['USD', 'EUR', 'GBP'] })
+
+// ---------- quotes: free ones for everybody, paid ones only for buyers ----------
+const isPremium = (s) => Boolean(SYMBOLS[s] && SYMBOLS[s].premium)
+const available = (s) => !feedStatus.missing.includes(s)
+const nice = (s) => (SYMBOLS[s].label && SYMBOLS[s].label !== s ? `${SYMBOLS[s].label} (${s})` : s)
+const ownsQuote = (uid, s) => Boolean(uid) && (db.owned[uid] || []).includes(s)
+const allowedSyms = (uid) => Object.keys(SYMBOLS).filter((s) => !isPremium(s) || (available(s) && ownsQuote(uid, s)))
+const symbolsFor = (uid) => Object.fromEntries(allowedSyms(uid).map((s) => [s, { pip: SYMBOLS[s].pip, digits: SYMBOLS[s].digits }]))
 
 // ---------- notifications ----------
 async function notify(userId, text) {
@@ -145,10 +157,15 @@ function getUserId(req) {
 // ---------- Telegram bot: persistent keyboard under the input field ----------
 const TG_API = process.env.TG_API || 'https://api.telegram.org'
 const WEBAPP_URL = process.env.WEBAPP_URL || process.env.RENDER_EXTERNAL_URL || 'https://tg-alerts-2khy.onrender.com'
-const WELCOME = 'Price alerts for EURUSD, GBPUSD and DXY.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.'
+const WELCOME = 'Price alerts for EURUSD, GBPUSD and DXY.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.\n\nWant Gold or GER40? Tap Add quote.'
 const MY_ALERTS_TEXT = 'My alerts'
+const ADD_TEXT = 'Add quote'
+const MYQ_TEXT = 'My quotes'
 const KEYBOARD = {
-  keyboard: [[{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }, { text: MY_ALERTS_TEXT }]],
+  keyboard: [
+    [{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }, { text: MY_ALERTS_TEXT }],
+    [{ text: ADD_TEXT }, { text: MYQ_TEXT }],
+  ],
   resize_keyboard: true,
   is_persistent: true,
 }
@@ -184,23 +201,133 @@ function alertsView(uid) {
   rows.push([{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }])
   return { text, reply_markup: { inline_keyboard: rows } }
 }
-async function handleUpdate(u) {
-  if (u.callback_query) {
-    const q = u.callback_query, uid = String(q.from.id)
-    const m = q.data && q.data.match(/^del:(\d+)$/)
-    if (m) {
-      const before = db.alerts.length
-      db.alerts = db.alerts.filter((a) => !(a.id === Number(m[1]) && a.userId === uid))
-      if (db.alerts.length !== before) save()
-      await tg('answerCallbackQuery', { callback_query_id: q.id, text: 'Deleted' })
-      if (q.message) await tg('editMessageText', { chat_id: q.message.chat.id, message_id: q.message.message_id, ...alertsView(uid) })
-    } else await tg('answerCallbackQuery', { callback_query_id: q.id })
+
+// ----- paid quotes: manual approval -----
+const who = (o) => `${o.name || 'user'}${o.username ? ' @' + o.username : ''} (${o.userId})`
+function payView(o) {
+  if (o.status === 'paid') {
+    return { text: `${nice(o.symbol)}\n\nPayment request sent. You will get a message as soon as it is confirmed.`, markup: { inline_keyboard: [] } }
+  }
+  if (!PAY_DETAILS) {
+    return { text: `${nice(o.symbol)}\n\nPayment details are not set up yet. Please contact the admin.`, markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel:${o.id}` }]] } }
+  }
+  return {
+    text: `${nice(o.symbol)} · forever\nPrice: ${PREMIUM_PRICE} ₽\n\nPay to:\n${PAY_DETAILS}\n\nAfter the transfer tap I paid.`,
+    markup: { inline_keyboard: [[{ text: 'I paid', callback_data: `paid:${o.id}` }], [{ text: 'Cancel', callback_data: `cancel:${o.id}` }]] },
+  }
+}
+function buyList(uid) {
+  const list = Object.keys(SYMBOLS).filter((s) => isPremium(s) && available(s) && !ownsQuote(uid, s))
+  if (!list.length) return { text: 'You already have all available quotes.' }
+  return {
+    text: `Add a quote (${PREMIUM_PRICE} ₽, forever):`,
+    reply_markup: { inline_keyboard: list.map((s) => [{ text: `${nice(s)} · ${PREMIUM_PRICE} ₽`, callback_data: `buy:${s}` }]) },
+  }
+}
+function grant(uid, s) {
+  db.owned[uid] = [...new Set([...(db.owned[uid] || []), s])]
+  save()
+}
+
+async function handleCallback(q) {
+  const uid = String(q.from.id), data = q.data || ''
+  const chat = q.message && q.message.chat.id, mid = q.message && q.message.message_id
+  const ans = (text) => tg('answerCallbackQuery', { callback_query_id: q.id, text })
+  const edit = (text, markup) => (chat ? tg('editMessageText', { chat_id: chat, message_id: mid, text, reply_markup: markup || { inline_keyboard: [] } }) : null)
+  let m
+  if ((m = data.match(/^del:(\d+)$/))) {
+    const before = db.alerts.length
+    db.alerts = db.alerts.filter((a) => !(a.id === Number(m[1]) && a.userId === uid))
+    if (db.alerts.length !== before) save()
+    await ans('Deleted')
+    if (q.message) await tg('editMessageText', { chat_id: chat, message_id: mid, ...alertsView(uid) })
     return
   }
+  if ((m = data.match(/^buy:(\w+)$/))) {
+    const s = m[1]
+    if (!isPremium(s) || !available(s)) return ans('Not available')
+    if (ownsQuote(uid, s)) return ans('You already have it')
+    let o = Object.values(db.orders).find((x) => x.userId === uid && x.symbol === s && (x.status === 'new' || x.status === 'paid'))
+    if (!o) {
+      o = { id: db.seq++, userId: uid, name: [q.from.first_name, q.from.last_name].filter(Boolean).join(' '), username: q.from.username || '', symbol: s, status: 'new', ts: Date.now() }
+      db.orders[o.id] = o; save()
+    }
+    await ans()
+    const v = payView(o)
+    return edit(v.text, v.markup)
+  }
+  if ((m = data.match(/^paid:(\d+)$/))) {
+    const o = db.orders[m[1]]
+    if (!o || o.userId !== uid) return ans('Not found')
+    if (o.status === 'paid') return ans('Already sent, please wait')
+    if (o.status !== 'new') return ans('This request is closed')
+    o.status = 'paid'; o.paidAt = Date.now(); save()
+    await ans('Sent. Waiting for confirmation')
+    const v = payView(o)
+    await edit(v.text, v.markup)
+    await tg('sendMessage', {
+      chat_id: ADMIN_CHAT_ID,
+      text: `💰 Payment request #${o.id}\n${who(o)}\n${nice(o.symbol)} · ${PREMIUM_PRICE} ₽`,
+      reply_markup: { inline_keyboard: [[{ text: '✅ Approve', callback_data: `ok:${o.id}` }, { text: '✕ Decline', callback_data: `no:${o.id}` }]] },
+    })
+    return
+  }
+  if ((m = data.match(/^cancel:(\d+)$/))) {
+    const o = db.orders[m[1]]
+    if (!o || o.userId !== uid) return ans('Not found')
+    if (o.status === 'paid') return ans('Already sent, please wait')
+    if (o.status === 'new') { delete db.orders[o.id]; save() }
+    await ans('Cancelled')
+    return edit('Cancelled.')
+  }
+  if ((m = data.match(/^(ok|no):(\d+)$/))) {
+    if (uid !== ADMIN_CHAT_ID) return ans('Admin only')
+    const o = db.orders[m[2]]
+    if (!o) return ans('Not found')
+    if (o.status !== 'paid' && o.status !== 'new') { await ans('Already handled'); return }
+    if (m[1] === 'ok') {
+      o.status = 'approved'; grant(o.userId, o.symbol)
+      await ans('Approved')
+      await edit(`✅ Approved #${o.id}\n${who(o)}\n${nice(o.symbol)}`)
+      await notify(o.userId, `✅ ${nice(o.symbol)} is added. Open Alerts and pick it in the list.`)
+    } else {
+      o.status = 'declined'; save()
+      await ans('Declined')
+      await edit(`✕ Declined #${o.id}\n${who(o)}\n${nice(o.symbol)}`)
+      await notify(o.userId, `❌ Payment for ${nice(o.symbol)} was not confirmed. If you did pay, contact the admin.`)
+    }
+    return
+  }
+  await ans()
+}
+
+async function handleUpdate(u) {
+  if (u.callback_query) return handleCallback(u.callback_query)
   const m = u.message
   if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
-  if (/^\/alerts(@\w+)?(\s|$)/i.test(m.text) || m.text.trim() === MY_ALERTS_TEXT) {
-    await tg('sendMessage', { chat_id: m.chat.id, ...alertsView(String(m.from.id)) })
+  const uid = String(m.from.id), txt = m.text.trim()
+  if (uid === ADMIN_CHAT_ID) {
+    const g = txt.match(/^\/(grant|revoke)\s+(\d+)\s+(\w+)$/i)
+    if (g) {
+      const s = g[3].toUpperCase()
+      if (!isPremium(s)) { await tg('sendMessage', { chat_id: m.chat.id, text: 'Unknown paid quote. Use: ' + Object.keys(SYMBOLS).filter(isPremium).join(', ') }); return }
+      if (g[1].toLowerCase() === 'grant') grant(g[2], s)
+      else { db.owned[g[2]] = (db.owned[g[2]] || []).filter((x) => x !== s); save() }
+      await tg('sendMessage', { chat_id: m.chat.id, text: `Done: ${g[1].toLowerCase()} ${s} for ${g[2]}` })
+      return
+    }
+  }
+  if (/^\/alerts(@\w+)?(\s|$)/i.test(txt) || txt === MY_ALERTS_TEXT) {
+    await tg('sendMessage', { chat_id: m.chat.id, ...alertsView(uid) })
+    return
+  }
+  if (/^\/quotes(@\w+)?(\s|$)/i.test(txt) || txt === ADD_TEXT) {
+    await tg('sendMessage', { chat_id: m.chat.id, ...buyList(uid) })
+    return
+  }
+  if (txt === MYQ_TEXT) {
+    const list = allowedSyms(uid).map((s) => `• ${nice(s)}`).join('\n')
+    await tg('sendMessage', { chat_id: m.chat.id, text: `Your quotes:\n\n${list}` })
     return
   }
   await tg('sendMessage', { chat_id: m.chat.id, text: WELCOME, reply_markup: KEYBOARD })
@@ -209,7 +336,7 @@ async function pollTelegram() {
   if (!BOT_TOKEN || process.env.BOT_POLLING === 'off' || (MOCK && process.env.BOT_POLLING !== 'on')) return
   try { await tg('deleteWebhook', {}) } catch {}
   try {
-    await tg('setMyCommands', { commands: [{ command: 'start', description: 'Open Alerts' }, { command: 'alerts', description: 'My active alerts' }] })
+    await tg('setMyCommands', { commands: [{ command: 'start', description: 'Open Alerts' }, { command: 'alerts', description: 'My active alerts' }, { command: 'quotes', description: 'Add a quote' }] })
   } catch {}
   console.log('[bot] waiting for Telegram messages')
   let offset = 0
@@ -230,6 +357,13 @@ const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'applic
 const body = (req) => new Promise((ok) => { let d = ''; req.on('data', (c) => (d += c)); req.on('end', () => { try { ok(JSON.parse(d || '{}')) } catch { ok({}) } }) })
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' }
 
+// Small on-the-fly fixes for the page: reload the quote list after sign-in and ignore quotes the page does not know yet.
+function patchIndex(html) {
+  return html
+    .replace('renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)', () => "cfg = await api('/api/config'); renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)")
+    .replace('if (shown[k] == null) continue', () => 'if (shown[k] == null || !cfg.symbols[k]) continue')
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x')
   const p = url.pathname
@@ -238,11 +372,17 @@ const server = http.createServer(async (req, res) => {
     const f = path.join(__dir, 'public', p === '/' ? 'index.html' : p)
     if (!f.startsWith(path.join(__dir, 'public')) || !fs.existsSync(f)) { res.writeHead(404); return res.end('not found') }
     res.writeHead(200, { 'content-type': mime[path.extname(f)] || 'text/plain' })
+    if (path.basename(f) === 'index.html') return res.end(patchIndex(fs.readFileSync(f, 'utf8')))
     return res.end(fs.readFileSync(f))
   }
 
-  if (p === '/api/config') return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: Object.fromEntries(Object.entries(SYMBOLS).map(([k, v]) => [k, { pip: v.pip, digits: v.digits }])) })
-  if (p === '/api/prices') { const uid = getUserId(req); if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' }); return json(res, 200, prices) }
+  if (p === '/api/config') return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: symbolsFor(getUserId(req)) })
+  if (p === '/api/prices') {
+    const uid = getUserId(req)
+    if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' })
+    const ok = new Set(allowedSyms(uid))
+    return json(res, 200, Object.fromEntries(Object.entries(prices).filter(([k]) => ok.has(k))))
+  }
   if (p === '/api/news') { const uid = getUserId(req); if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' }); return json(res, 200, await getNews()) }
   if (p === '/api/access/check') { const uid = getUserId(req); return uid ? json(res, 200, { ok: true, userId: uid }) : json(res, 401, { error: 'access_required' }) }
 
@@ -253,7 +393,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/alerts' && req.method === 'POST') {
     const b = await body(req)
     const level = Number(b.level)
-    if (!SYMBOLS[b.symbol] || !['above', 'below'].includes(b.dir) || !isFinite(level)) return json(res, 400, { error: 'bad input' })
+    if (!SYMBOLS[b.symbol] || !allowedSyms(uid).includes(b.symbol) || !['above', 'below'].includes(b.dir) || !isFinite(level)) return json(res, 400, { error: 'bad input' })
     if (db.alerts.filter((x) => x.userId === uid && x.status === 'active').length >= MAX_ALERTS) return json(res, 400, { error: 'limit', max: MAX_ALERTS })
     const a = { id: db.seq++, userId: uid, symbol: b.symbol, dir: b.dir, level, note: cleanNote(b.note), status: 'active', createdAt: Date.now() }
     db.alerts.push(a); save(); return json(res, 200, a)
@@ -291,13 +431,16 @@ const server = http.createServer(async (req, res) => {
   json(res, 404, { error: 'not found' })
 })
 
-startPrices(onTick)
+Promise.resolve(startPrices(onTick))
+  .then(() => { if (feedStatus.missing.length) adminNotify('⚠️ Not available on your OANDA account: ' + feedStatus.missing.join(', '), 'missing') })
+  .catch((e) => console.error('[prices]', e && e.message))
 pollTelegram()
 
 // ---------- price loss guard: if the feed goes silent while the market is open, tell users with active alerts and the owner ----------
 const STALE_MS = Number(process.env.PRICE_STALE_MIN || 10) * 60e3
 const BOOT = Date.now()
 let feedDown = false
+let downUsers = []
 function marketOpen(d = new Date()) {
   if (process.env.FORCE_MARKET_OPEN) return true
   const day = d.getUTCDay(), h = d.getUTCHours() // sun=0 ... sat=6
@@ -306,21 +449,30 @@ function marketOpen(d = new Date()) {
   if (day === 0 && h < 22) return false
   return true
 }
+// per-quote trading hours: gold has a daily break, GER40 trades only on weekdays during the day
+function symOpen(s, d = new Date()) {
+  if (!marketOpen(d)) return false
+  const day = d.getUTCDay(), h = d.getUTCHours(), mi = d.getUTCMinutes()
+  if (s === 'XAUUSD') return !(h === 21 || h === 22 || (h === 23 && mi < 5))
+  if (s === 'GER40') return day >= 1 && day <= 5 && h >= 7 && h < 21
+  return true
+}
 async function watchPrices() {
   const now = Date.now()
   if (!marketOpen()) { if (feedDown) feedDown = false; return }
-  const stale = Object.keys(SYMBOLS).filter((s) => now - Math.max(prices[s]?.ts || 0, prices[s]?.dataTs || 0, BOOT) > STALE_MS)
-  const users = [...new Set(db.alerts.filter((a) => a.status === 'active').map((a) => a.userId))]
+  const stale = Object.keys(SYMBOLS).filter((s) => available(s) && symOpen(s) && now - Math.max(prices[s]?.ts || 0, prices[s]?.dataTs || 0, BOOT) > STALE_MS)
   if (stale.length && !feedDown) {
     feedDown = true
+    downUsers = [...new Set(db.alerts.filter((a) => a.status === 'active' && stale.includes(a.symbol)).map((a) => a.userId))]
     console.error('[prices] no new prices:', stale.join(', '))
     await adminNotify('⚠️ Price feed lost: ' + stale.join(', '), 'feed')
-    for (const u of users) await notify(u, '⚠️ Price feed lost (' + stale.join(', ') + '). Your alerts will not fire until it is back. I will tell you when it recovers.')
+    for (const u of downUsers) await notify(u, '⚠️ Price feed lost (' + stale.join(', ') + '). Your alerts will not fire until it is back. I will tell you when it recovers.')
   } else if (!stale.length && feedDown) {
     feedDown = false
     console.log('[prices] prices are flowing again')
     await adminNotify('✅ Price feed is back', 'feed')
-    for (const u of users) await notify(u, '✅ Price feed is back. Alerts are working again.')
+    for (const u of downUsers) await notify(u, '✅ Price feed is back. Alerts are working again.')
+    downUsers = []
   }
 }
 setInterval(() => watchPrices().catch((e) => console.error('[watch]', e.message)), Number(process.env.WATCHDOG_MS || 30000))

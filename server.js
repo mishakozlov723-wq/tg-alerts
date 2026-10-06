@@ -141,10 +141,16 @@ function getUserId(req) {
   return null
 }
 
-// ---------- Telegram-бот: приветствие и кнопка Open Alerts ----------
+// ---------- Telegram-бот: приветствие и кнопки под полем ввода ----------
 const TG_API = process.env.TG_API || 'https://api.telegram.org'
 const WEBAPP_URL = process.env.WEBAPP_URL || process.env.RENDER_EXTERNAL_URL || 'https://tg-alerts-2khy.onrender.com'
 const WELCOME = 'Price alerts for EURUSD, GBPUSD and DXY.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.\n\nTap the button below to open.'
+const MY_ALERTS_TEXT = 'My alerts'
+const KEYBOARD = {
+  keyboard: [[{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }], [{ text: MY_ALERTS_TEXT }]],
+  resize_keyboard: true,
+  is_persistent: true,
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const tg = async (method, payload, ms = 15000) => {
   const r = await fetch(`${TG_API}/bot${BOT_TOKEN}/${method}`, {
@@ -178,14 +184,11 @@ async function handleUpdate(u) {
   }
   const m = u.message
   if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
-  if (/^\/alerts(@\w+)?(\s|$)/i.test(m.text)) {
+  if (/^\/alerts(@\w+)?(\s|$)/i.test(m.text) || m.text.trim() === MY_ALERTS_TEXT) {
     await tg('sendMessage', { chat_id: m.chat.id, ...alertsView(String(m.from.id)) })
     return
   }
-  await tg('sendMessage', {
-    chat_id: m.chat.id, text: WELCOME,
-    reply_markup: { inline_keyboard: [[{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }]] },
-  })
+  await tg('sendMessage', { chat_id: m.chat.id, text: WELCOME, reply_markup: KEYBOARD })
 }
 async function pollTelegram() {
   if (!BOT_TOKEN || process.env.BOT_POLLING === 'off' || (MOCK && process.env.BOT_POLLING !== 'on')) return
@@ -306,6 +309,3 @@ async function watchPrices() {
 setInterval(() => watchPrices().catch((e) => console.error('[watch]', e.message)), Number(process.env.WATCHDOG_MS || 30000))
 setInterval(() => checkNews().catch((e) => console.error('[news]', e.message)), 20000)
 server.listen(PORT, () => console.log(`Open in browser: http://localhost:${PORT}`))
-
-
-

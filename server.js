@@ -8,6 +8,9 @@ import { SYMBOLS, prices, startPrices, setPrice, feedStatus } from './prices.js'
 import { getNews } from './news.js'
 import { verifyAccessToken } from './shared/access-token.mjs'
 
+// Silver is a paid quote from Capital.com (epic can be changed with CAPITAL_EPIC_XAGUSD, shift with OFFSET_XAGUSD).
+if (!SYMBOLS.XAGUSD) SYMBOLS.XAGUSD = { label: 'Silver', premium: true, pip: 0.01, digits: 3, base: 50, capital: process.env.CAPITAL_EPIC_XAGUSD || 'SILVER', offset: Number(process.env.OFFSET_XAGUSD || 0), duka: ['xagusd'] }
+
 const __dir = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT || 3000)
 const BOT_TOKEN = process.env.BOT_TOKEN || ''
@@ -76,9 +79,13 @@ const cleanNote = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 20
 const defaultSettings = () => ({ lead: [15, 5], currencies: ['USD', 'EUR', 'GBP'] })
 
 // ---------- quotes: free ones for everybody, paid ones only for buyers ----------
+// A bundle is sold as one product but gives several quotes (Gold + Silver costs less than two singles).
+const BUNDLES = { METALS: { label: 'Gold + Silver', syms: ['XAUUSD', 'XAGUSD'], price: Number(process.env.PREMIUM_BUNDLE_RUB || 450) } }
 const isPremium = (s) => Boolean(SYMBOLS[s] && SYMBOLS[s].premium)
 const available = (s) => !feedStatus.missing.includes(s)
-const nice = (s) => (SYMBOLS[s].label && SYMBOLS[s].label !== s ? `${SYMBOLS[s].label} (${s})` : s)
+const bundleOk = (k) => Boolean(BUNDLES[k]) && BUNDLES[k].syms.every((s) => isPremium(s) && available(s))
+const priceOf = (k) => (BUNDLES[k] ? BUNDLES[k].price : PREMIUM_PRICE)
+const nice = (s) => (BUNDLES[s] ? BUNDLES[s].label : SYMBOLS[s].label && SYMBOLS[s].label !== s ? `${SYMBOLS[s].label} (${s})` : s)
 const ownsQuote = (uid, s) => Boolean(uid) && (db.owned[uid] || []).includes(s)
 const allowedSyms = (uid) => Object.keys(SYMBOLS).filter((s) => !isPremium(s) || (available(s) && ownsQuote(uid, s)))
 const symbolsFor = (uid) => Object.fromEntries(allowedSyms(uid).map((s) => [s, { pip: SYMBOLS[s].pip, digits: SYMBOLS[s].digits }]))
@@ -157,7 +164,7 @@ function getUserId(req) {
 // ---------- Telegram bot: persistent keyboard under the input field ----------
 const TG_API = process.env.TG_API || 'https://api.telegram.org'
 const WEBAPP_URL = process.env.WEBAPP_URL || process.env.RENDER_EXTERNAL_URL || 'https://tg-alerts-2khy.onrender.com'
-const WELCOME = 'Price alerts for EURUSD, GBPUSD and DXY.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.\n\nWant Gold or GER40? Tap Add quote.'
+const WELCOME = 'Price alerts for EURUSD, GBPUSD and DXY.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.\n\nWant Gold, Silver or GER40? Tap Add quote.'
 const MY_ALERTS_TEXT = 'My alerts'
 const ADD_TEXT = 'Add quote'
 const MYQ_TEXT = 'My quotes'
@@ -212,20 +219,23 @@ function payView(o) {
     return { text: `${nice(o.symbol)}\n\nPayment details are not set up yet. Please contact the admin.`, markup: { inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel:${o.id}` }]] } }
   }
   return {
-    text: `${nice(o.symbol)} · forever\nPrice: ${PREMIUM_PRICE} ₽\n\nPay to:\n${PAY_DETAILS}\n\nAfter the transfer tap I paid.`,
+    text: `${nice(o.symbol)} · forever\nPrice: ${priceOf(o.symbol)} ₽\n\nPay to:\n${PAY_DETAILS}\n\nAfter the transfer tap I paid.`,
     markup: { inline_keyboard: [[{ text: 'I paid', callback_data: `paid:${o.id}` }], [{ text: 'Cancel', callback_data: `cancel:${o.id}` }]] },
   }
 }
 function buyList(uid) {
-  const list = Object.keys(SYMBOLS).filter((s) => isPremium(s) && available(s) && !ownsQuote(uid, s))
-  if (!list.length) return { text: 'You already have all available quotes.' }
-  return {
-    text: `Add a quote (${PREMIUM_PRICE} ₽, forever):`,
-    reply_markup: { inline_keyboard: list.map((s) => [{ text: `${nice(s)} · ${PREMIUM_PRICE} ₽`, callback_data: `buy:${s}` }]) },
+  const rows = Object.keys(SYMBOLS)
+    .filter((s) => isPremium(s) && available(s) && !ownsQuote(uid, s))
+    .map((s) => [{ text: `${nice(s)} · ${priceOf(s)} ₽`, callback_data: `buy:${s}` }])
+  for (const k of Object.keys(BUNDLES)) {
+    if (bundleOk(k) && BUNDLES[k].syms.every((x) => !ownsQuote(uid, x))) rows.push([{ text: `${nice(k)} · ${priceOf(k)} ₽`, callback_data: `buy:${k}` }])
   }
+  if (!rows.length) return { text: 'You already have all available quotes.' }
+  return { text: 'Add a quote (pay once, keep forever):', reply_markup: { inline_keyboard: rows } }
 }
 function grant(uid, s) {
-  db.owned[uid] = [...new Set([...(db.owned[uid] || []), s])]
+  const list = BUNDLES[s] ? BUNDLES[s].syms : [s]
+  db.owned[uid] = [...new Set([...(db.owned[uid] || []), ...list])]
   save()
 }
 
@@ -245,8 +255,10 @@ async function handleCallback(q) {
   }
   if ((m = data.match(/^buy:(\w+)$/))) {
     const s = m[1]
-    if (!isPremium(s) || !available(s)) return ans('Not available')
-    if (ownsQuote(uid, s)) return ans('You already have it')
+    const isBundle = Boolean(BUNDLES[s])
+    if (isBundle ? !bundleOk(s) : !isPremium(s) || !available(s)) return ans('Not available')
+    if (isBundle) { if (BUNDLES[s].syms.some((x) => ownsQuote(uid, x))) return ans('You already have one of them. Buy the other one separately.') }
+    else if (ownsQuote(uid, s)) return ans('You already have it')
     let o = Object.values(db.orders).find((x) => x.userId === uid && x.symbol === s && (x.status === 'new' || x.status === 'paid'))
     if (!o) {
       o = { id: db.seq++, userId: uid, name: [q.from.first_name, q.from.last_name].filter(Boolean).join(' '), username: q.from.username || '', symbol: s, status: 'new', ts: Date.now() }
@@ -267,7 +279,7 @@ async function handleCallback(q) {
     await edit(v.text, v.markup)
     await tg('sendMessage', {
       chat_id: ADMIN_CHAT_ID,
-      text: `💰 Payment request #${o.id}\n${who(o)}\n${nice(o.symbol)} · ${PREMIUM_PRICE} ₽`,
+      text: `💰 Payment request #${o.id}\n${who(o)}\n${nice(o.symbol)} · ${priceOf(o.symbol)} ₽`,
       reply_markup: { inline_keyboard: [[{ text: '✅ Approve', callback_data: `ok:${o.id}` }, { text: '✕ Decline', callback_data: `no:${o.id}` }]] },
     })
     return
@@ -310,9 +322,9 @@ async function handleUpdate(u) {
     const g = txt.match(/^\/(grant|revoke)\s+(\d+)\s+(\w+)$/i)
     if (g) {
       const s = g[3].toUpperCase()
-      if (!isPremium(s)) { await tg('sendMessage', { chat_id: m.chat.id, text: 'Unknown paid quote. Use: ' + Object.keys(SYMBOLS).filter(isPremium).join(', ') }); return }
+      if (!isPremium(s) && !BUNDLES[s]) { await tg('sendMessage', { chat_id: m.chat.id, text: 'Unknown paid quote. Use: ' + [...Object.keys(SYMBOLS).filter(isPremium), ...Object.keys(BUNDLES)].join(', ') }); return }
       if (g[1].toLowerCase() === 'grant') grant(g[2], s)
-      else { db.owned[g[2]] = (db.owned[g[2]] || []).filter((x) => x !== s); save() }
+      else { const list = BUNDLES[s] ? BUNDLES[s].syms : [s]; db.owned[g[2]] = (db.owned[g[2]] || []).filter((x) => !list.includes(x)); save() }
       await tg('sendMessage', { chat_id: m.chat.id, text: `Done: ${g[1].toLowerCase()} ${s} for ${g[2]}` })
       return
     }
@@ -432,7 +444,7 @@ const server = http.createServer(async (req, res) => {
 })
 
 Promise.resolve(startPrices(onTick))
-  .then(() => { if (feedStatus.missing.length) adminNotify('⚠️ Not available on your OANDA account: ' + feedStatus.missing.join(', '), 'missing') })
+  .then(() => { if (feedStatus.missing.length) adminNotify('⚠️ Not available on your price feed: ' + feedStatus.missing.join(', '), 'missing') })
   .catch((e) => console.error('[prices]', e && e.message))
 pollTelegram()
 
@@ -449,11 +461,11 @@ function marketOpen(d = new Date()) {
   if (day === 0 && h < 22) return false
   return true
 }
-// per-quote trading hours: gold has a daily break, GER40 trades only on weekdays during the day
+// per-quote trading hours: gold and silver have a daily break, GER40 trades only on weekdays during the day
 function symOpen(s, d = new Date()) {
   if (!marketOpen(d)) return false
   const day = d.getUTCDay(), h = d.getUTCHours(), mi = d.getUTCMinutes()
-  if (s === 'XAUUSD') return !(h === 21 || h === 22 || (h === 23 && mi < 5))
+  if (s === 'XAUUSD' || s === 'XAGUSD') return !(h === 21 || h === 22 || (h === 23 && mi < 5))
   if (s === 'GER40') return day >= 1 && day <= 5 && h >= 7 && h < 21
   return true
 }

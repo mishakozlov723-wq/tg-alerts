@@ -142,16 +142,15 @@ function getUserId(req) {
   return null
 }
 
-// ---------- Telegram bot: welcome message with inline buttons ----------
+// ---------- Telegram bot: persistent keyboard under the input field ----------
 const TG_API = process.env.TG_API || 'https://api.telegram.org'
 const WEBAPP_URL = process.env.WEBAPP_URL || process.env.RENDER_EXTERNAL_URL || 'https://tg-alerts-2khy.onrender.com'
 const WELCOME = 'Price alerts for EURUSD, GBPUSD and DXY.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.'
 const MY_ALERTS_TEXT = 'My alerts'
-const WELCOME_INLINE = {
-  inline_keyboard: [
-    [{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }],
-    [{ text: MY_ALERTS_TEXT, callback_data: 'my' }],
-  ],
+const KEYBOARD = {
+  keyboard: [[{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }, { text: MY_ALERTS_TEXT }]],
+  resize_keyboard: true,
+  is_persistent: true,
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const tg = async (method, payload, ms = 15000) => {
@@ -195,22 +194,16 @@ async function handleUpdate(u) {
       if (db.alerts.length !== before) save()
       await tg('answerCallbackQuery', { callback_query_id: q.id, text: 'Deleted' })
       if (q.message) await tg('editMessageText', { chat_id: q.message.chat.id, message_id: q.message.message_id, ...alertsView(uid) })
-    } else if (q.data === 'my') {
-      await tg('answerCallbackQuery', { callback_query_id: q.id })
-      if (q.message) await tg('sendMessage', { chat_id: q.message.chat.id, ...alertsView(uid) })
     } else await tg('answerCallbackQuery', { callback_query_id: q.id })
     return
   }
   const m = u.message
   if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
-  // remove the old keyboard under the input field if it is still there, then delete the helper message
-  const rm = await tg('sendMessage', { chat_id: m.chat.id, text: '…', reply_markup: { remove_keyboard: true } })
-  if (rm && rm.ok) tg('deleteMessage', { chat_id: m.chat.id, message_id: rm.result.message_id }).catch(() => {})
   if (/^\/alerts(@\w+)?(\s|$)/i.test(m.text) || m.text.trim() === MY_ALERTS_TEXT) {
     await tg('sendMessage', { chat_id: m.chat.id, ...alertsView(String(m.from.id)) })
     return
   }
-  await tg('sendMessage', { chat_id: m.chat.id, text: WELCOME, reply_markup: WELCOME_INLINE })
+  await tg('sendMessage', { chat_id: m.chat.id, text: WELCOME, reply_markup: KEYBOARD })
 }
 async function pollTelegram() {
   if (!BOT_TOKEN || process.env.BOT_POLLING === 'off' || (MOCK && process.env.BOT_POLLING !== 'on')) return

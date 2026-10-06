@@ -67,7 +67,7 @@ async function startCapital(onTick) {
   for (const [s, c] of items) symOfEpic[c.capital] = s
   const epics = items.map(([, c]) => c.capital).join(',')
   const symbols = items.map(([s]) => s)
-  let cst = '', sec = '', loginAt = 0, lastWarn = 0, busy = false, announced = ''
+  let cst = '', sec = '', loginAt = 0, lastWarn = 0, busy = false, announced = null, fails = 0, nextTry = 0
   const warn = (msg) => { if (Date.now() - lastWarn > 30e3) { console.error('[capital]', msg); lastWarn = Date.now() } }
 
   const login = async () => {
@@ -95,7 +95,7 @@ async function startCapital(onTick) {
   }
 
   const pull = async () => {
-    if (busy) return
+    if (busy || Date.now() < nextTry) return
     busy = true
     try {
       if (!cst || Date.now() - loginAt > 8 * 60e3) await login()
@@ -106,6 +106,8 @@ async function startCapital(onTick) {
       if (r.status === 401) { cst = ''; throw new Error('session expired, logging in again') }
       if (!r.ok) throw new Error(`markets HTTP ${r.status} ${(await r.text()).slice(0, 150)}`)
       const d = await r.json()
+      if (fails >= 3) tellAdmin('\u2705 Capital.com login works again')
+      fails = 0; nextTry = 0
       const seen = new Set()
       for (const m of d.marketDetails || []) {
         const epic = m.instrument?.epic || m.epic
@@ -123,8 +125,15 @@ async function startCapital(onTick) {
       setMissing(symbols.filter((s) => !seen.has(s)))
     } catch (e) {
       warn(e.message)
-      if (!announced) setMissing(symbols.slice())
-      if (/login/.test(e.message)) cst = ''
+      // only at the very first attempt: mark quotes as missing. A later hiccup must not hide them.
+      if (announced === null) setMissing(symbols.slice())
+      if (/login/.test(e.message)) {
+        cst = ''
+        fails++
+        // back off (2s, 4s, ... up to 60s) so a dead key is not hammered; tell the owner once per streak
+        nextTry = Date.now() + Math.min(60e3, 2000 * 2 ** Math.min(fails, 6))
+        if (fails === 3) tellAdmin('\u26a0\ufe0f Capital.com login keeps failing (API key expired or changed?): ' + e.message)
+      }
     } finally { busy = false }
   }
 

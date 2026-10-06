@@ -1,4 +1,5 @@
 // Price sources. PRICE_SOURCE=mock (default, for tests), oanda or dukascopy.
+// Paid quotes (Gold, GER40) come from Capital.com when CAPITAL_API_KEY is set.
 // To change a source, edit or add a function in this file.
 export const SYMBOLS = {
   EURUSD: { pip: 0.0001, digits: 5, base: 1.085, oanda: 'EUR_USD', duka: [process.env.DUKA_EURUSD || 'eurusd'] },
@@ -6,13 +7,13 @@ export const SYMBOLS = {
   // Dukascopy has several names for the dollar index, try them in turn.
   DXY: { pip: 0.01, digits: 3, base: 99.5, duka: [process.env.DUKA_DXY, 'dollaridxusd', 'usdidx'].filter(Boolean) },
   // Paid quotes: visible only to users who bought them. OFFSET_* shifts the price (in price units) to match your chart.
-  // OANDA_XAUUSD / OANDA_GER40 can override the OANDA instrument names.
-  XAUUSD: { label: 'Gold', premium: true, pip: 0.1, digits: 2, base: 4000, oanda: process.env.OANDA_XAUUSD || 'XAU_USD', offset: Number(process.env.OFFSET_XAUUSD || 0), duka: [process.env.DUKA_XAUUSD || 'xauusd'] },
-  GER40: { label: 'GER40', premium: true, pip: 1, digits: 1, base: 25400, oanda: process.env.OANDA_GER40 || 'DE30_EUR', offset: Number(process.env.OFFSET_GER40 || 0), duka: [process.env.DUKA_GER40 || 'deuidxeur'] },
+  // CAPITAL_EPIC_* can override the Capital.com market names.
+  XAUUSD: { label: 'Gold', premium: true, pip: 0.1, digits: 2, base: 4000, oanda: process.env.OANDA_XAUUSD || 'XAU_USD', capital: process.env.CAPITAL_EPIC_XAUUSD || 'GOLD', offset: Number(process.env.OFFSET_XAUUSD || 0), duka: [process.env.DUKA_XAUUSD || 'xauusd'] },
+  GER40: { label: 'GER40', premium: true, pip: 1, digits: 1, base: 25400, oanda: process.env.OANDA_GER40 || 'DE30_EUR', capital: process.env.CAPITAL_EPIC_GER40 || 'DE40', offset: Number(process.env.OFFSET_GER40 || 0), duka: [process.env.DUKA_GER40 || 'deuidxeur'] },
 }
 
 export const prices = {} // { EURUSD: { price, ts, dataTs? } }
-// Paid symbols that the Oanda account does not offer (filled at startup).
+// Paid symbols whose feed is not available (filled at startup).
 export const feedStatus = { missing: [] }
 
 export function setPrice(sym, price, onTick) {
@@ -20,9 +21,24 @@ export function setPrice(sym, price, onTick) {
   onTick?.(sym, prices[sym].price)
 }
 
+const capitalOn = () => !!(process.env.CAPITAL_API_KEY && process.env.CAPITAL_IDENTIFIER && process.env.CAPITAL_PASSWORD)
+
+function tellAdmin(text) {
+  console.log('[prices]', text)
+  if (!process.env.BOT_TOKEN) return
+  fetch(`${process.env.TG_API || 'https://api.telegram.org'}/bot${process.env.BOT_TOKEN}/sendMessage`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: process.env.ADMIN_CHAT_ID || '1011596614', text: '[tg-alerts] ' + text }),
+  }).catch(() => {})
+}
+
 export function startPrices(onTick) {
   const mode = process.env.PRICE_SOURCE || 'mock'
-  if (mode === 'oanda') return startOanda(onTick)
+  if (mode === 'oanda') {
+    const cap = capitalOn() ? startCapital(onTick).catch((e) => console.error('[capital]', e.message)) : null
+    const main = startOanda(onTick)
+    return cap ? Promise.all([cap, main]) : main
+  }
   if (mode === 'dukascopy') return startDukascopy(onTick)
   return startMock(onTick)
 }
@@ -36,6 +52,85 @@ function startMock(onTick) {
     }
   }, 300)
   console.log('[prices] MOCK mode (test prices)')
+}
+
+// ---------- Capital.com (REST, polling) ----------
+// Env: CAPITAL_API_KEY, CAPITAL_IDENTIFIER (login email), CAPITAL_PASSWORD (API key password),
+// CAPITAL_ENV=demo|live (default demo), CAPITAL_SIDE=bid|ask|mid (default mid), CAPITAL_INTERVAL_MS (default 1500).
+async function startCapital(onTick) {
+  const key = process.env.CAPITAL_API_KEY, id = process.env.CAPITAL_IDENTIFIER, pw = process.env.CAPITAL_PASSWORD
+  const live = (process.env.CAPITAL_ENV || 'demo') === 'live'
+  const base = live ? 'https://api-capital.backend-capital.com' : 'https://demo-api-capital.backend-capital.com'
+  const side = process.env.CAPITAL_SIDE || 'mid'
+  const items = Object.entries(SYMBOLS).filter(([, c]) => c.capital)
+  const symOfEpic = {}
+  for (const [s, c] of items) symOfEpic[c.capital] = s
+  const epics = items.map(([, c]) => c.capital).join(',')
+  const symbols = items.map(([s]) => s)
+  let cst = '', sec = '', loginAt = 0, lastWarn = 0, busy = false, announced = ''
+  const warn = (msg) => { if (Date.now() - lastWarn > 30e3) { console.error('[capital]', msg); lastWarn = Date.now() } }
+
+  const login = async () => {
+    const r = await fetch(base + '/api/v1/session', {
+      method: 'POST',
+      headers: { 'X-CAP-API-KEY': key, 'content-type': 'application/json' },
+      body: JSON.stringify({ identifier: id, password: pw, encryptedPassword: false }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!r.ok) throw new Error(`login HTTP ${r.status} ${(await r.text()).slice(0, 150)}`)
+    cst = r.headers.get('cst') || ''
+    sec = r.headers.get('x-security-token') || ''
+    if (!cst || !sec) throw new Error('login: no session tokens in response')
+    loginAt = Date.now()
+  }
+
+  const setMissing = (list) => {
+    feedStatus.missing = feedStatus.missing.filter((s) => !symbols.includes(s)).concat(list)
+    const sig = list.join(',')
+    if (sig !== announced) {
+      announced = sig
+      if (list.length) tellAdmin('Capital.com feed not available for: ' + sig)
+      else tellAdmin(`Capital.com connected (${live ? 'live' : 'demo'}): ${symbols.join(', ')}`)
+    }
+  }
+
+  const pull = async () => {
+    if (busy) return
+    busy = true
+    try {
+      if (!cst || Date.now() - loginAt > 8 * 60e3) await login()
+      const r = await fetch(`${base}/api/v1/markets?epics=${epics}`, {
+        headers: { 'X-SECURITY-TOKEN': sec, CST: cst },
+        signal: AbortSignal.timeout(8000),
+      })
+      if (r.status === 401) { cst = ''; throw new Error('session expired, logging in again') }
+      if (!r.ok) throw new Error(`markets HTTP ${r.status} ${(await r.text()).slice(0, 150)}`)
+      const d = await r.json()
+      const seen = new Set()
+      for (const m of d.marketDetails || []) {
+        const epic = m.instrument?.epic || m.epic
+        const s = symOfEpic[epic]
+        if (!s) continue
+        const bid = Number(m.snapshot?.bid), ofr = Number(m.snapshot?.offer)
+        if (!Number.isFinite(bid) || !Number.isFinite(ofr)) continue
+        seen.add(s)
+        let v = side === 'bid' ? bid : side === 'ask' ? ofr : (bid + ofr) / 2
+        v += SYMBOLS[s].offset || 0
+        const rounded = Number(v.toFixed(SYMBOLS[s].digits))
+        if (prices[s]?.price !== rounded) setPrice(s, v, onTick)
+        if (prices[s] && m.snapshot?.marketStatus === 'TRADEABLE') prices[s].dataTs = Date.now()
+      }
+      setMissing(symbols.filter((s) => !seen.has(s)))
+    } catch (e) {
+      warn(e.message)
+      if (!announced) setMissing(symbols.slice())
+      if (/login/.test(e.message)) cst = ''
+    } finally { busy = false }
+  }
+
+  await pull()
+  setInterval(pull, Number(process.env.CAPITAL_INTERVAL_MS || 1500))
+  console.log(`[prices] CAPITAL.COM (${live ? 'live' : 'demo'}, ${side}): ${epics}`)
 }
 
 // Last price of an instrument: ticks of the last 10 minutes, then 1-minute bars of 2 hours, then 4 days (weekends).
@@ -134,30 +229,18 @@ async function startOanda(onTick) {
     console.log('[oanda] account', account)
   }
 
-  // Add paid instruments only if this account really offers them, so one missing instrument cannot break the others.
+  // Paid instruments come from Capital.com when it is configured. Otherwise try OANDA, but only if the account offers them.
   const extra = []
-  const wanted = Object.entries(SYMBOLS).filter(([, c]) => c.premium && c.oanda)
-  const tell = (text) => {
-    console.log('[oanda]', text)
-    const adminChat = process.env.ADMIN_CHAT_ID || '1011596614'
-    if (!process.env.BOT_TOKEN) return
-    fetch(`${process.env.TG_API || 'https://api.telegram.org'}/bot${process.env.BOT_TOKEN}/sendMessage`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: adminChat, text: '[tg-alerts] ' + text }),
-    }).catch(() => {})
-  }
-  try {
-    const ins = await get(`/v3/accounts/${account}/instruments`)
-    const names = new Set((ins.instruments || []).map((i) => i.name))
-    for (const [s, c] of wanted) { if (names.has(c.oanda)) extra.push(c.oanda); else feedStatus.missing.push(s) }
-    if (feedStatus.missing.length) {
-      const hints = [...names].filter((n) => /XAU|GOLD|DE30|DAX|GER|DE40|DEU/i.test(n))
-      tell(`OANDA account ${account} (${live ? 'live' : 'practice'}) offers ${names.size} instruments. Similar to gold/GER40: ${hints.join(', ') || 'none'}`)
+  const wanted = capitalOn() ? [] : Object.entries(SYMBOLS).filter(([, c]) => c.premium && c.oanda)
+  if (wanted.length) {
+    try {
+      const ins = await get(`/v3/accounts/${account}/instruments`)
+      const names = new Set((ins.instruments || []).map((i) => i.name))
+      for (const [s, c] of wanted) { if (names.has(c.oanda)) extra.push(c.oanda); else feedStatus.missing.push(s) }
+    } catch (e) {
+      console.error('[oanda] instrument list:', e.message)
+      for (const [s] of wanted) feedStatus.missing.push(s)
     }
-  } catch (e) {
-    console.error('[oanda] instrument list:', e.message)
-    tell('OANDA instrument list failed: ' + e.message)
-    for (const [s] of wanted) feedStatus.missing.push(s)
   }
   const instrList = [...OANDA_PAIRS, ...extra].join(',')
 
@@ -177,7 +260,7 @@ async function startOanda(onTick) {
     mid[inst] = (bid + ask) / 2
     pick[inst] = side === 'ask' ? ask : side === 'mid' ? (bid + ask) / 2 : bid
     const s = symOf[inst]
-    if (s) put(s, pick[inst], t)
+    if (s && !(SYMBOLS[s].premium && capitalOn())) put(s, pick[inst], t)
     if (OANDA_PAIRS.every((k) => mid[k])) put('DXY', dxyFormula(mid), t)
   }
   const ingestPrice = (p) => ingest(p.instrument, p.bids?.[0]?.price ?? p.closeoutBid, p.asks?.[0]?.price ?? p.closeoutAsk, p.time)
@@ -229,5 +312,5 @@ async function startOanda(onTick) {
     }
   }
   if (useStream) runStream()
-  console.log(`[prices] OANDA mode (${live ? 'live' : 'practice'}, ${side}, ${useStream ? 'tick stream' : 'polling every second'}); paid: ${extra.join(', ') || 'none'}`)
+  console.log(`[prices] OANDA mode (${live ? 'live' : 'practice'}, ${side}, ${useStream ? 'tick stream' : 'polling every second'}); extra: ${extra.join(', ') || 'none'}`)
 }

@@ -79,10 +79,11 @@ const cleanNote = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 20
 const defaultSettings = () => ({ lead: [15, 5], currencies: ['USD', 'EUR', 'GBP'] })
 
 // ---------- quotes: free ones for everybody, paid ones only for buyers ----------
-// A bundle is sold as one product but gives several quotes (Gold + Silver costs less than two singles).
+// Gold and Silver are sold only together as one bundle; GER40 is sold on its own.
 const BUNDLES = { METALS: { label: 'Gold + Silver', syms: ['XAUUSD', 'XAGUSD'], price: Number(process.env.PREMIUM_BUNDLE_RUB || 450) } }
 const isPremium = (s) => Boolean(SYMBOLS[s] && SYMBOLS[s].premium)
 const available = (s) => !feedStatus.missing.includes(s)
+const inBundle = (s) => Object.values(BUNDLES).some((b) => b.syms.includes(s))
 const bundleOk = (k) => Boolean(BUNDLES[k]) && BUNDLES[k].syms.every((s) => isPremium(s) && available(s))
 const priceOf = (k) => (BUNDLES[k] ? BUNDLES[k].price : PREMIUM_PRICE)
 const nice = (s) => (BUNDLES[s] ? BUNDLES[s].label : SYMBOLS[s].label && SYMBOLS[s].label !== s ? `${SYMBOLS[s].label} (${s})` : s)
@@ -224,11 +225,12 @@ function payView(o) {
   }
 }
 function buyList(uid) {
+  // single quotes that are part of a bundle (Gold, Silver) are not sold on their own
   const rows = Object.keys(SYMBOLS)
-    .filter((s) => isPremium(s) && available(s) && !ownsQuote(uid, s))
+    .filter((s) => isPremium(s) && available(s) && !ownsQuote(uid, s) && !inBundle(s))
     .map((s) => [{ text: `${nice(s)} · ${priceOf(s)} ₽`, callback_data: `buy:${s}` }])
   for (const k of Object.keys(BUNDLES)) {
-    if (bundleOk(k) && BUNDLES[k].syms.every((x) => !ownsQuote(uid, x))) rows.push([{ text: `${nice(k)} · ${priceOf(k)} ₽`, callback_data: `buy:${k}` }])
+    if (bundleOk(k) && BUNDLES[k].syms.some((x) => !ownsQuote(uid, x))) rows.push([{ text: `${nice(k)} · ${priceOf(k)} ₽`, callback_data: `buy:${k}` }])
   }
   if (!rows.length) return { text: 'You already have all available quotes.' }
   return { text: 'Add a quote (pay once, keep forever):', reply_markup: { inline_keyboard: rows } }
@@ -256,9 +258,8 @@ async function handleCallback(q) {
   if ((m = data.match(/^buy:(\w+)$/))) {
     const s = m[1]
     const isBundle = Boolean(BUNDLES[s])
-    if (isBundle ? !bundleOk(s) : !isPremium(s) || !available(s)) return ans('Not available')
-    if (isBundle) { if (BUNDLES[s].syms.some((x) => ownsQuote(uid, x))) return ans('You already have one of them. Buy the other one separately.') }
-    else if (ownsQuote(uid, s)) return ans('You already have it')
+    if (isBundle ? !bundleOk(s) : !isPremium(s) || !available(s) || inBundle(s)) return ans('Not available')
+    if (isBundle ? BUNDLES[s].syms.every((x) => ownsQuote(uid, x)) : ownsQuote(uid, s)) return ans('You already have it')
     let o = Object.values(db.orders).find((x) => x.userId === uid && x.symbol === s && (x.status === 'new' || x.status === 'paid'))
     if (!o) {
       o = { id: db.seq++, userId: uid, name: [q.from.first_name, q.from.last_name].filter(Boolean).join(' '), username: q.from.username || '', symbol: s, status: 'new', ts: Date.now() }

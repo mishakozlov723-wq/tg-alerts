@@ -86,7 +86,10 @@ if (!db.resetV3) {
   save()
   console.log('[db] purchases reset (v3)')
 }
-const MAX_ALERTS = 10
+// Alert limit: 15 for everybody, 50 for users who bought any paid bundle.
+const BASE_ALERTS = Number(process.env.BASE_ALERTS || 15)
+const PRO_ALERTS = Number(process.env.PRO_ALERTS || 50)
+const limitFor = (uid) => ((db.owned[uid] || []).length ? PRO_ALERTS : BASE_ALERTS)
 const cleanNote = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
 const defaultSettings = () => ({ lead: [15, 5], currencies: ['USD', 'EUR', 'GBP'] })
 
@@ -182,7 +185,7 @@ function getUserId(req) {
 // ---------- Telegram bot: persistent keyboard under the input field ----------
 const TG_API = process.env.TG_API || 'https://api.telegram.org'
 const WEBAPP_URL = process.env.WEBAPP_URL || process.env.RENDER_EXTERNAL_URL || 'https://tg-alerts-2khy.onrender.com'
-const WELCOME = 'Price alerts for EURUSD and GBPUSD.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.\n\nWant Gold, Silver, GER40 or DXY? Tap Add quote.'
+const WELCOME = `Price alerts for EURUSD and GBPUSD.\n\nUp to ${BASE_ALERTS} alerts for free, ${PRO_ALERTS} with any paid bundle. Instant notifications and red news from Forex Factory, all in one place.\n\nWant Gold, Silver, GER40 or DXY? Tap Add quote.`
 const MY_ALERTS_TEXT = 'My alerts'
 const ADD_TEXT = 'Add quote'
 const MYQ_TEXT = 'My quotes'
@@ -220,7 +223,7 @@ const dirSym = (d) => (d === 'above' ? '▲' : '▼')
 function alertsView(uid) {
   const list = db.alerts.filter((a) => a.userId === uid && a.status === 'active')
   const text = list.length
-    ? `Your active alerts (${list.length}/${MAX_ALERTS}):\n\n` + list.map((a, i) => `${i + 1}. ${a.symbol} ${dirSym(a.dir)} ${a.level}${a.note ? ' · ' + a.note : ''}`).join('\n')
+    ? `Your active alerts (${list.length}/${limitFor(uid)}):\n\n` + list.map((a, i) => `${i + 1}. ${a.symbol} ${dirSym(a.dir)} ${a.level}${a.note ? ' · ' + a.note : ''}`).join('\n')
     : 'No active alerts yet.'
   const rows = list.map((a) => [{ text: `✕ ${a.symbol} ${dirSym(a.dir)} ${a.level}`, callback_data: `del:${a.id}` }])
   rows.push([{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }])
@@ -250,7 +253,7 @@ function buyList(uid) {
     if (bundleOk(k) && BUNDLES[k].syms.some((x) => !ownsQuote(uid, x))) rows.push([{ text: `${nice(k)} · ${priceOf(k)} ₽`, callback_data: `buy:${k}` }])
   }
   if (!rows.length) return { text: 'You already have all available quotes.' }
-  return { text: 'Add a quote (pay once, keep forever):', reply_markup: { inline_keyboard: rows } }
+  return { text: `Add a quote (pay once, keep forever).\nAny bundle also raises your alert limit to ${PRO_ALERTS}.`, reply_markup: { inline_keyboard: rows } }
 }
 function grant(uid, s) {
   const list = BUNDLES[s] ? BUNDLES[s].syms : [s]
@@ -319,7 +322,7 @@ async function handleCallback(q) {
       o.status = 'approved'; grant(o.userId, o.symbol)
       await ans('Approved')
       await edit(`✅ Approved #${o.id}\n${who(o)}\n${nice(o.symbol)}`)
-      await notify(o.userId, `✅ ${nice(o.symbol)} is added. Open Alerts and pick it in the list.`)
+      await notify(o.userId, `✅ ${nice(o.symbol)} is added. Open Alerts and pick it in the list. Your alert limit is now ${PRO_ALERTS}.`)
     } else {
       o.status = 'declined'; save()
       await ans('Declined')
@@ -424,7 +427,8 @@ const server = http.createServer(async (req, res) => {
     const b = await body(req)
     const level = Number(b.level)
     if (!SYMBOLS[b.symbol] || !allowedSyms(uid).includes(b.symbol) || !['above', 'below'].includes(b.dir) || !isFinite(level)) return json(res, 400, { error: 'bad input' })
-    if (db.alerts.filter((x) => x.userId === uid && x.status === 'active').length >= MAX_ALERTS) return json(res, 400, { error: 'limit', max: MAX_ALERTS })
+    const max = limitFor(uid)
+    if (db.alerts.filter((x) => x.userId === uid && x.status === 'active').length >= max) return json(res, 400, { error: 'limit', max })
     const a = { id: db.seq++, userId: uid, symbol: b.symbol, dir: b.dir, level, note: cleanNote(b.note), status: 'active', createdAt: Date.now() }
     db.alerts.push(a); save(); return json(res, 200, a)
   }

@@ -77,11 +77,19 @@ const save = () => {
   if (USE_REDIS) { dirty = true; flush() }
 }
 
-// One-time reset (new quote lineup): drop all test purchases and orders, and the alerts on paid quotes.
-if (!db.resetV3) {
+// Reset of all purchases: drops purchases and orders, and the alerts on paid quotes. Alerts on free quotes stay.
+function resetQuotes() {
+  const owners = Object.keys(db.owned).filter((u) => (db.owned[u] || []).length).length
+  const before = db.alerts.length
   db.owned = {}
   db.orders = {}
   db.alerts = db.alerts.filter((a) => !(SYMBOLS[a.symbol] && SYMBOLS[a.symbol].premium))
+  save()
+  return { owners, alerts: before - db.alerts.length }
+}
+// One-time reset (new quote lineup)
+if (!db.resetV3) {
+  resetQuotes()
   db.resetV3 = Date.now()
   save()
   console.log('[db] purchases reset (v3)')
@@ -340,6 +348,15 @@ async function handleUpdate(u) {
   if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
   const uid = String(m.from.id), txt = m.text.trim()
   if (uid === ADMIN_CHAT_ID) {
+    if (/^\/reset_quotes(@\w+)?(\s+confirm)?$/i.test(txt)) {
+      if (!/confirm$/i.test(txt)) {
+        await tg('sendMessage', { chat_id: m.chat.id, text: 'This removes ALL purchased quotes and orders for everybody, and deletes alerts on paid quotes (including yours).\n\nTo confirm send:\n/reset_quotes confirm' })
+        return
+      }
+      const r = resetQuotes()
+      await tg('sendMessage', { chat_id: m.chat.id, text: `Done. Purchases cleared for ${r.owners} users, ${r.alerts} alerts on paid quotes deleted.` })
+      return
+    }
     const g = txt.match(/^\/(grant|revoke)\s+(\d+)\s+(\w+)$/i)
     if (g) {
       const s = g[3].toUpperCase()

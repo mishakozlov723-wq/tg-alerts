@@ -10,6 +10,8 @@ import { verifyAccessToken } from './shared/access-token.mjs'
 
 // Silver is a paid quote from Capital.com (epic can be changed with CAPITAL_EPIC_XAGUSD, shift with OFFSET_XAGUSD).
 if (!SYMBOLS.XAGUSD) SYMBOLS.XAGUSD = { label: 'Silver', premium: true, pip: 0.01, digits: 3, base: 50, capital: process.env.CAPITAL_EPIC_XAGUSD || 'SILVER', offset: Number(process.env.OFFSET_XAGUSD || 0), duka: ['xagusd'] }
+// DXY is a paid quote too (only EURUSD and GBPUSD are free). Its price is still computed from the OANDA pairs.
+SYMBOLS.DXY.premium = true
 
 const __dir = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT || 3000)
@@ -20,7 +22,7 @@ const REQUIRE_ACCESS = process.env.REQUIRE_ACCESS === 'true' || Boolean(ACCESS_S
 const MOCK = (process.env.PRICE_SOURCE || 'mock') === 'mock'
 const DB_FILE = process.env.DB_FILE || path.join(__dir, 'data.json')
 const ADMIN_CHAT_ID = String(process.env.ADMIN_CHAT_ID || '1011596614')
-const PREMIUM_PRICE = Number(process.env.PREMIUM_PRICE_RUB || 400)
+const PREMIUM_PRICE = Number(process.env.PREMIUM_PRICE_RUB || 350)
 const PAY_DETAILS = process.env.PAY_DETAILS || ''
 
 // ---------- simple JSON db ----------
@@ -74,13 +76,27 @@ const save = () => {
   try { fs.writeFileSync(DB_FILE, JSON.stringify(db)) } catch {}
   if (USE_REDIS) { dirty = true; flush() }
 }
+
+// One-time reset (new quote lineup): drop all test purchases and orders, and the alerts on paid quotes.
+if (!db.resetV3) {
+  db.owned = {}
+  db.orders = {}
+  db.alerts = db.alerts.filter((a) => !(SYMBOLS[a.symbol] && SYMBOLS[a.symbol].premium))
+  db.resetV3 = Date.now()
+  save()
+  console.log('[db] purchases reset (v3)')
+}
 const MAX_ALERTS = 10
 const cleanNote = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
 const defaultSettings = () => ({ lead: [15, 5], currencies: ['USD', 'EUR', 'GBP'] })
 
 // ---------- quotes: free ones for everybody, paid ones only for buyers ----------
-// Gold and Silver are sold only together as one bundle; GER40 is sold on its own.
-const BUNDLES = { METALS: { label: 'Gold + Silver', syms: ['XAUUSD', 'XAGUSD'], price: Number(process.env.PREMIUM_BUNDLE_RUB || 450) } }
+// Paid quotes are sold only in bundles. Free: EURUSD and GBPUSD.
+const BUNDLE_PRICE = Number(process.env.PREMIUM_BUNDLE_RUB || 350)
+const BUNDLES = {
+  METALS: { label: 'Gold + Silver', syms: ['XAUUSD', 'XAGUSD'], price: BUNDLE_PRICE },
+  INDICES: { label: 'GER40 + DXY', syms: ['GER40', 'DXY'], price: BUNDLE_PRICE },
+}
 const isPremium = (s) => Boolean(SYMBOLS[s] && SYMBOLS[s].premium)
 const available = (s) => !feedStatus.missing.includes(s)
 const inBundle = (s) => Object.values(BUNDLES).some((b) => b.syms.includes(s))
@@ -112,6 +128,7 @@ function onTick(sym, price) {
   let changed = false
   for (const a of db.alerts) {
     if (a.status !== 'active' || a.symbol !== sym) continue
+    if (isPremium(sym) && !ownsQuote(a.userId, sym)) continue
     const hit = a.dir === 'above' ? price >= a.level : price <= a.level
     if (!hit) continue
     a.status = 'fired'; a.firedAt = Date.now(); a.firedPrice = price; changed = true
@@ -165,7 +182,7 @@ function getUserId(req) {
 // ---------- Telegram bot: persistent keyboard under the input field ----------
 const TG_API = process.env.TG_API || 'https://api.telegram.org'
 const WEBAPP_URL = process.env.WEBAPP_URL || process.env.RENDER_EXTERNAL_URL || 'https://tg-alerts-2khy.onrender.com'
-const WELCOME = 'Price alerts for EURUSD, GBPUSD and DXY.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.\n\nWant Gold, Silver or GER40? Tap Add quote.'
+const WELCOME = 'Price alerts for EURUSD and GBPUSD.\n\nUnlimited alerts, instant notifications and red news from Forex Factory, all in one place.\n\nWant Gold, Silver, GER40 or DXY? Tap Add quote.'
 const MY_ALERTS_TEXT = 'My alerts'
 const ADD_TEXT = 'Add quote'
 const MYQ_TEXT = 'My quotes'
@@ -225,7 +242,7 @@ function payView(o) {
   }
 }
 function buyList(uid) {
-  // single quotes that are part of a bundle (Gold, Silver) are not sold on their own
+  // quotes that are part of a bundle are not sold on their own
   const rows = Object.keys(SYMBOLS)
     .filter((s) => isPremium(s) && available(s) && !ownsQuote(uid, s) && !inBundle(s))
     .map((s) => [{ text: `${nice(s)} · ${priceOf(s)} ₽`, callback_data: `buy:${s}` }])

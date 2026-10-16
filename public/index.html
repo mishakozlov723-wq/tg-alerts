@@ -169,7 +169,7 @@ body.ready .rise{opacity:1;transform:none}
       </div>
       <div class="field">
         <label for="level">Price level</label>
-        <input type="text" id="level" inputmode="text" enterkeyhint="done" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0.00000">
+        <input type="text" id="level" inputmode="decimal" enterkeyhint="done" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0.00000">
       </div>
       <div class="chips" id="chips"></div>
       <button class="cta" id="create">Create alert</button>
@@ -324,6 +324,21 @@ function dismissInput(input) {
   input.blur()
   try { if (tg?.isVersionAtLeast?.('9.1')) tg.hideKeyboard?.() } catch {}
 }
+// Dismiss the price keypad on a background tap, without swallowing control clicks or scrolls.
+let priceTap = null
+const priceControls = 'input,textarea,select,button,a,label,[contenteditable],[role="button"]'
+document.addEventListener('pointerdown', (event) => {
+  priceTap = event.isPrimary && document.activeElement === $('#level') && !event.target.closest(priceControls)
+    ? { id: event.pointerId, x: event.clientX, y: event.clientY } : null
+}, { passive: true })
+document.addEventListener('pointercancel', () => { priceTap = null }, { passive: true })
+document.addEventListener('pointerup', (event) => {
+  const tap = priceTap; priceTap = null
+  if (!tap || tap.id !== event.pointerId || event.target.closest(priceControls)) return
+  if (Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > 10) return
+  if (document.activeElement !== $('#level') && document.activeElement !== document.body) return
+  dismissInput($('#level'))
+}, { passive: true })
 for (const id of ['level', 'liveText']) {
   const input = document.getElementById(id)
   let multiline = false

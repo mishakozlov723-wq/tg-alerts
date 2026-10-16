@@ -1,7 +1,7 @@
 // Loaded ONLY by the isolated subprocess integration test. Never imported by app.
 import fs from 'node:fs'
 const time = Date.parse('2026-06-15T16:55:00Z')
-Date.now = () => time
+Date.now = () => process.env.LIVE_TEST_CLOCK ? Number(fs.readFileSync(process.env.LIVE_TEST_CLOCK, 'utf8')) : time
 const response = (data) => ({ ok:true, status:200, json:async()=>data })
 globalThis.fetch = async (url, options = {}) => {
   const u = new URL(url)

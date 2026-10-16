@@ -133,6 +133,20 @@ body.ready .rise{opacity:1;transform:none}
 #h4Schedule .item{padding:16px 0}#h4Schedule .t{font-size:13px}#h4Schedule small{font-size:11px;line-height:1.7}
 #h4Retry{background:none;border:1px solid var(--line);border-radius:12px;padding:9px 16px;font-size:12px;margin-bottom:20px}
 .tabs button{font-size:10px;letter-spacing:.12em}
+/* Live: no cards, no explanatory paragraphs. */
+.live-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}.live-heading h1{margin-bottom:28px}
+.live-plus{border:1px solid var(--line);background:none;border-radius:50%;width:44px;height:44px;font-size:26px;font-weight:300;line-height:1;flex:none}
+#liveStatus{font-size:12px;color:var(--mut);line-height:1.6;white-space:pre-line}#liveStatus:not(:empty){margin-bottom:16px}#liveRetry{margin-bottom:20px}
+#liveForm{border-top:1px solid var(--line);padding-top:24px;margin-bottom:32px}#liveForm .field{margin-bottom:24px;min-width:0}
+#liveForm textarea,#liveForm input,#liveForm select{background:none;border:0;outline:none;width:100%;max-width:100%;min-width:0;font:400 14px 'Poppins',sans-serif;color:var(--txt);padding:10px 0 0;color-scheme:dark}
+#liveForm textarea{resize:vertical;line-height:1.6}#liveForm select option{background:var(--bg)}
+.live-pair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
+.live-time{display:flex;gap:12px;align-items:center;margin-bottom:12px}.live-time input{flex:1;border-bottom:1px solid var(--line)!important;padding:10px 0!important}.live-time .x{width:36px;height:36px}
+#liveSummary{font-size:11px;color:var(--mut);line-height:1.6;margin:20px 0}
+#liveList .item{align-items:flex-start}#liveList .live-copy{min-width:0;flex:1}#liveList .t{font-weight:400;font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}#liveList small{font-size:11px;line-height:1.8}
+.live-controls{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}.live-controls .ed{padding:0 12px;height:34px;font-size:10px}
+#p-live button:disabled{opacity:.35;cursor:default}.live-plus:active{border-color:var(--txt)}
+.tabs button{font-size:9px;letter-spacing:.08em}
 </style>
 </head>
 <body>
@@ -180,19 +194,33 @@ body.ready .rise{opacity:1;transform:none}
     <div class="opt" id="cur"></div>
     <div id="nlist"></div>
   </section>
+  <section id="p-live" class="hide">
+    <div class="eyebrow">Personal reminders</div>
+    <div class="live-heading"><h1>Live.</h1><button id="liveAdd" class="live-plus" type="button" aria-label="Add reminder">+</button></div>
+    <div id="liveStatus" role="status" aria-live="polite"></div>
+    <button id="liveRetry" class="ed hide" type="button">Reload</button>
+    <form id="liveForm" class="hide">
+      <div class="field"><label for="liveText">Reminder</label><textarea id="liveText" rows="2" maxlength="500" placeholder="Take the second phone" required></textarea></div>
+      <div class="live-pair"><div class="field"><label for="liveDate">Start date</label><input id="liveDate" type="date" required></div><div class="field"><label for="liveZone">Timezone</label><select id="liveZone" required></select></div></div>
+      <div class="eyebrow lbl">Time</div><div id="liveTimes"></div><button id="liveAddTime" class="ed" type="button">+ Time</button>
+      <div class="eyebrow lbl" style="margin-top:28px">Repeat</div><div class="opt" id="liveRepeat"></div>
+      <div class="field hide" id="liveCountField"><label for="liveCount" id="liveCountLabel">Days</label><input id="liveCount" type="number" min="1" max="90" step="1" value="2" required></div>
+      <div id="liveSummary" role="status"></div>
+      <div class="erow"><button id="liveCancel" class="ed" type="button">Cancel</button><button id="liveSave" class="ed save" type="submit">Save</button></div>
+    </form>
+    <div id="liveList"></div>
+  </section>
   <section id="p-settings" class="hide">
     <div class="eyebrow">Preferences</div>
     <h1>Settings.</h1>
     <div class="eyebrow lbl">H4 candle reminders</div>
-    <p class="h4-copy">Stay in sync with OANDA. New York daylight-saving changes are handled automatically.</p>
-    <div class="setting-row"><div><b>H4 reminders</b><small>Delivered to your Telegram chat.</small></div><button id="h4Enabled" class="switch" type="button" role="switch" aria-checked="false" aria-label="H4 reminders" disabled></button></div>
+    <div class="setting-row"><div><b>H4 reminders</b></div><button id="h4Enabled" class="switch" type="button" role="switch" aria-checked="false" aria-label="H4 reminders" disabled></button></div>
     <div id="h4State" role="status" aria-live="polite">Loading settings…</div>
     <button id="h4Retry" class="hide" type="button">Retry</button>
     <div class="h4-group"><div class="eyebrow lbl">Assets</div><div class="opt" id="h4Assets"></div></div>
     <div class="h4-group"><div class="eyebrow lbl">Notify before (min)</div><div class="opt" id="h4Lead"></div></div>
-    <div class="setting-row"><div><b>At candle close</b><small>Only after OANDA confirms completion.</small></div><button id="h4AtClose" class="switch" type="button" role="switch" aria-checked="true" aria-label="Notify at candle close" disabled></button></div>
-    <div class="h4-group"><div class="eyebrow lbl">OANDA timing</div><p class="h4-copy">H4 aligned to 17:00 America/New_York. Times below are shown in your device timezone. No active candle, no countdown.<br>DXY uses OANDA FX reference timing, not a native DXY candle.</p><div id="h4Schedule"></div></div>
-    <p class="h4-copy" style="margin-top:24px">Open the bot and tap /start once to allow messages. Delivery requires the server to be running; missed reminders are not replayed.</p>
+    <div class="setting-row"><div><b>At candle close</b></div><button id="h4AtClose" class="switch" type="button" role="switch" aria-checked="true" aria-label="Notify at candle close" disabled></button></div>
+    <div class="h4-group"><div class="eyebrow lbl">Next close</div><div id="h4Schedule"></div></div>
   </section>
 </div>
 
@@ -200,6 +228,7 @@ body.ready .rise{opacity:1;transform:none}
   <button class="on" data-t="new">New</button>
   <button data-t="alerts">Alerts</button>
   <button data-t="news">News</button>
+  <button data-t="live">Live</button>
   <button data-t="settings">Settings</button>
 </div></nav>
 
@@ -246,7 +275,7 @@ async function goTab(t, btn) {
   old.style.transition = 'opacity .28s ease'
   old.style.opacity = 0
   try {
-    await Promise.all([t === 'alerts' ? loadAlerts() : t === 'news' ? loadNews() : t === 'settings' ? window.H4Settings.load() : null, new Promise((r) => setTimeout(r, 300))])
+    await Promise.all([t === 'alerts' ? loadAlerts() : t === 'news' ? loadNews() : t === 'settings' ? window.H4Settings.load() : t === 'live' ? window.LiveReminders?.load() : null, new Promise((r) => setTimeout(r, 300))])
   } catch (e) { console.error(e) }
   old.classList.add('hide'); old.style.opacity = ''; old.style.transition = ''
   const sec = $('#p-' + t)
@@ -419,5 +448,6 @@ function showErr(e) {
 } catch (e) { showErr(e); whenReady() } })()
 </script>
 <script src="/h4-settings.js"></script>
+<script type="module" src="/live-reminders.js"></script>
 </body>
 </html>

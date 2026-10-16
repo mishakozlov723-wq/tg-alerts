@@ -91,10 +91,10 @@ function fixture({ tradeable = true, fail = false, token = 'test', mode = 'oanda
   } })
   return {source, requests, setTime:(v)=>{now=v}}
 }
-test('real candle API plus market status, DXY shares reference requests, cached across users', async () => {
+test('real candle API plus market status, removed DXY makes no extra request, cached across users', async () => {
   const f = fixture()
   const result = await f.source.get(['EURUSD','DXY'])
-  assert.equal(result.EURUSD.status,'live'); assert.equal(result.DXY.reference,true)
+  assert.equal(result.EURUSD.status,'live'); assert.equal(result.DXY,undefined)
   assert.equal(result.EURUSD.active.close,close)
   assert.equal(f.requests.length,3)
   await f.source.get(['EURUSD']); assert.equal(f.requests.length,3)
@@ -114,9 +114,10 @@ test('no token or mock mode means unconfigured, never fabricated live candles', 
     assert.equal((await f.source.get(['EURUSD'])).EURUSD.status,'unconfigured'); assert.equal(f.requests.length,0)
   }
 })
-test('DXY messages explicitly say reference, not a native candle', () => {
-  const text=h4Message({symbol:'DXY',close,lead:0,reference:true})
-  assert.match(text,/reference/i); assert.match(text,/not a native DXY candle/)
+test('legacy DXY preferences never produce H4 reminders', () => {
+  const s = {...prefs,symbols:['DXY','EURUSD']}
+  assert.deepEqual(dueH4Notifications(s,{...live,DXY:live.EURUSD},close-5*60000).map((e)=>e.symbol),['EURUSD'])
+  assert.throws(()=>normalizeH4Settings({...defaultH4Settings(),symbols:['DXY']}))
   assert.match(h4Message({symbol:'EURUSD',close,lead:5}),/17:00 UTC/)
 })
 test('local settings and dedup survive restart; settings isolated between users', async () => {

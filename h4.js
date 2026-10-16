@@ -4,7 +4,6 @@
 export const H4_ASSETS = {
   EURUSD: { label: 'EUR/USD', instrument: 'EUR_USD' },
   GBPUSD: { label: 'GBP/USD', instrument: 'GBP_USD' },
-  DXY: { label: 'DXY', instrument: 'EUR_USD', reference: true },
   XAUUSD: { label: 'Gold', instrument: 'XAU_USD' },
   GER40: { label: 'GER40', instrument: 'DE30_EUR' },
 }
@@ -132,6 +131,7 @@ export function dueH4Notifications(settings, states, now) {
   if (!settings?.enabled) return []
   const due = []
   for (const symbol of settings.symbols) {
+    if (!Object.hasOwn(H4_ASSETS, symbol)) continue // Ignore legacy DXY selections.
     const state = states[symbol]
     if (!state || !['live', 'waiting'].includes(state.status)) continue
     const { active, closed = [] } = state
@@ -151,9 +151,9 @@ export function dueH4Notifications(settings, states, now) {
 export function h4Message(event) {
   const label = H4_ASSETS[event.symbol].label
   const time = new Date(event.close).toISOString().slice(11, 16) + ' UTC'
-  const source = event.reference ? 'OANDA reference timing · not a native DXY candle' : 'OANDA'
-  if (event.lead) return `⏱ ${label} · H4\n${event.reference ? 'Reference interval' : 'Candle'} closes at ${time} (${event.lead} min reminder).\n${source}`
-  return `🔔 ${label} · H4\n${event.reference ? 'Reference H4 interval ended' : 'Candle closed'} at ${time}.\n${source}`
+  const source = 'OANDA'
+  if (event.lead) return `⏱ ${label} · H4\nCandle closes at ${time} (${event.lead} min reminder).\n${source}`
+  return `🔔 ${label} · H4\nCandle closed at ${time}.\n${source}`
 }
 export function createH4Runner({ getSettings, source, allowed, claim, deliver, clock = Date.now, onError = console.error }) {
   let busy = false

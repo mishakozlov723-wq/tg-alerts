@@ -9,6 +9,8 @@ import { getNews } from './news.js'
 import { verifyAccessToken } from './shared/access-token.mjs'
 import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner } from './h4.js'
 import { createH4Store } from './h4-store.js'
+import { createLiveStore, LiveConflict } from './live-store.js'
+import { newReminder, liveIdValid, liveView, createLiveRunner } from './live.js'
 
 // Silver is a paid quote from Capital.com (epic can be changed with CAPITAL_EPIC_XAGUSD, shift with OFFSET_XAGUSD).
 if (!SYMBOLS.XAGUSD) SYMBOLS.XAGUSD = { label: 'Silver', premium: true, pip: 0.01, digits: 3, base: 50, capital: process.env.CAPITAL_EPIC_XAGUSD || 'SILVER', offset: Number(process.env.OFFSET_XAGUSD || 0), duka: ['xagusd'] }
@@ -156,7 +158,7 @@ async function deliverH4(uid, text) {
   // Unlike legacy notify(), check Telegram's response and bound the request time.
   if (!BOT_TOKEN || !/^\d+$/.test(uid)) throw new Error('Telegram delivery is not configured for this user')
   const result = await tg('sendMessage', { chat_id: uid, text }, 10000)
-  if (!result.ok) throw new Error(`Telegram H4 delivery rejected (${result.error_code || 'unknown'})`)
+  if (!result.ok) { const e = new Error('Telegram delivery rejected'); e.definite = true; throw e }
   db.events.push({ id: db.seq++, userId: uid, text, ts: Date.now() })
   if (db.events.length > 500) db.events.splice(0, db.events.length - 500)
   save()
@@ -173,6 +175,29 @@ async function checkH4() {
   await store.refresh()
   await runH4()
 }
+
+// ---------- Live personal reminders (no quote purchase/source dependency) ----------
+let liveStore = null, liveStoreJob = null, liveRunner = null, liveRetry = 0
+async function getLiveStore() {
+  if (liveStore) return liveStore
+  if (liveStoreJob) return liveStoreJob
+  if (Date.now() < liveRetry) return null
+  liveStoreJob = createLiveStore({ redis: USE_REDIS ? redis : null, file: DB_FILE + '.live.json' })
+    .then((store) => {
+      liveStore = store
+      liveRunner = createLiveRunner({ store, deliver: deliverH4, onError: (m) => adminNotify(m, 'live-error', 300000) })
+      return store
+    }).catch((e) => { liveRetry = Date.now() + 30000; console.error('[live storage]', e.message); return null })
+    .finally(() => { liveStoreJob = null })
+  return liveStoreJob
+}
+async function checkLive() {
+  if (!BOT_TOKEN) return
+  if (await getLiveStore()) await liveRunner()
+}
+const liveConfigured = (uid) => Boolean(BOT_TOKEN) && /^\d+$/.test(uid)
+const liveInputKey = (v) => JSON.stringify({ text: typeof v.text === 'string' ? v.text.trim() : v.text, date: v.date,
+  times: Array.isArray(v.times) ? [...new Set(v.times)].sort() : v.times, timezone: v.timezone, repeat: v.repeat, count: v.count })
 
 // ---------- check alerts on every tick ----------
 function onTick(sym, price) {
@@ -511,7 +536,10 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/h4/settings') {
     const store = await getH4Store()
     if (!store) return json(res, 503, { error: 'H4 settings storage is unavailable. Please retry.' })
-    if (req.method === 'GET') return json(res, 200, store.get(uid))
+    if (req.method === 'GET') {
+      const saved = store.get(uid), symbols = saved.symbols.filter((s) => Object.hasOwn(H4_ASSETS, s))
+      return json(res, 200, { ...saved, symbols, enabled: saved.enabled && symbols.length > 0 })
+    }
     if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' })
     let settings
     try { settings = normalizeH4Settings(await body(req)) }
@@ -528,6 +556,58 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { source: 'OANDA', timezone: 'America/New_York', dailyAlignment: 17,
       configured: h4Source.configured && Boolean(BOT_TOKEN) && /^\d+$/.test(uid), serverTime: Date.now(),
       assets: Object.fromEntries(Object.entries(H4_ASSETS).map(([s, meta]) => [s, states[s] || { ...meta, status: 'locked', active: null }])) })
+  }
+  const liveRoute = p.match(/^\/api\/live(?:\/([a-f0-9-]+))?$/)
+  if (liveRoute) {
+    const id = liveRoute[1], store = await getLiveStore()
+    if (!store) return json(res, 503, { error: 'Live storage unavailable. Retry.' })
+    try {
+      if (!id && req.method === 'GET') {
+        await store.refresh()
+        return json(res, 200, { configured: liveConfigured(uid), serverTime: Date.now(),
+          reminders: store.list(uid).map((r) => liveView(r)).sort((a, b) => (a.next || Infinity) - (b.next || Infinity) || b.createdAt - a.createdAt) })
+      }
+      if (!id && req.method === 'POST') {
+        const b = await body(req)
+        if (!b || typeof b !== 'object' || Array.isArray(b)) return json(res, 400, { error: 'Invalid reminder' })
+        if (!liveIdValid(b.id)) return json(res, 400, { error: 'Invalid reminder ID' })
+        const existing = await store.read(uid, b.id)
+        if (existing) {
+          if (liveInputKey(existing.config) !== liveInputKey(b)) throw new LiveConflict()
+          return json(res, 200, liveView(existing)) // safe retry after a lost response
+        }
+        if (!liveConfigured(uid)) return json(res, 503, { error: 'Telegram delivery unavailable' })
+        let value
+        try { value = newReminder(uid, b.id, b) } catch (e) { return json(res, 400, { error: e.message }) }
+        await store.cas(uid, b.id, null, value, true)
+        return json(res, 201, liveView(value))
+      }
+      if (id && ['PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+        const b = await body(req)
+        if (!b || typeof b !== 'object' || Array.isArray(b)) return json(res, 400, { error: 'Invalid reminder' })
+        const current = await store.read(uid, id)
+        if (!current) return json(res, 404, { error: 'Reminder not found' })
+        if (b.revision !== current.revision) throw new LiveConflict()
+        let value = null
+        if (req.method === 'PUT') {
+          if (current.deliveries.some((d) => d.status === 'attempting')) throw new LiveConflict()
+          try { value = { ...newReminder(uid, id, b), createdAt: current.createdAt } }
+          catch (e) { return json(res, 400, { error: e.message }) }
+        }
+        if (req.method === 'PATCH') {
+          if (typeof b.enabled !== 'boolean') return json(res, 400, { error: 'Invalid reminder state' })
+          value = { ...current, enabled: b.enabled, revision: crypto.randomUUID(), updatedAt: Date.now() }
+          // Resuming never replays an occurrence that passed while paused.
+          if (b.enabled) value.deliveries = current.deliveries.map((d) => d.status === 'pending' && d.at <= Date.now() ? { ...d, status: 'missed' } : d)
+        }
+        await store.cas(uid, id, current, value)
+        return json(res, 200, value ? liveView(value) : { ok: true })
+      }
+      return json(res, 405, { error: 'method_not_allowed' })
+    } catch (e) {
+      // Storage timeouts may have committed. Never report a definite failed write.
+      return json(res, e.status || 503, { error: e.status ? e.message : 'Could not confirm saving. Reload to verify.' })
+    }
   }
   if (p === '/api/events') {
     const since = Number(url.searchParams.get('since') || 0)
@@ -591,6 +671,8 @@ setInterval(() => watchPrices().catch((e) => console.error('[watch]', e.message)
 setInterval(() => checkNews().catch((e) => console.error('[news]', e.message)), 20000)
 setInterval(() => checkH4().catch((e) => console.error('[h4]', e.message)), 10000)
 checkH4().catch((e) => console.error('[h4]', e.message))
+setInterval(() => checkLive().catch((e) => console.error('[live]', e.message)), 10000)
+checkLive().catch((e) => console.error('[live]', e.message))
 server.listen(PORT, () => {
   console.log(`Open in browser: http://localhost:${PORT}`)
   adminNotify('🟢 Service started', 'start', 60000)

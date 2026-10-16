@@ -1,6 +1,6 @@
 /* Existing app auth headers, palette and components; no Telegram bot commands. */
 (() => {
-  const labels = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', DXY: 'DXY', XAUUSD: 'Gold', GER40: 'GER40' }
+  const labels = { EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', XAUUSD: 'Gold', GER40: 'GER40' }
   let prefs = null, status = null, busy = false, loading = false, statusPerf = 0, error = ''
   const el = (id) => document.getElementById(id)
   async function request(url, options = {}) {
@@ -30,7 +30,7 @@
     }
     buttons('h4Assets', Object.keys(labels), prefs?.symbols || [], (s) => labels[s])
     buttons('h4Lead', [30, 15, 10, 5, 1], prefs?.lead || [], String)
-    el('h4State').textContent = error || (busy ? 'Saving…' : !status?.configured ? 'OANDA H4 or Telegram is not configured on this server. Reminders cannot be enabled yet.' : prefs?.enabled ? 'Reminders on · settings saved.' : 'Reminders off · choose assets and timing, then enable.')
+    el('h4State').textContent = error || (busy ? 'Saving…' : !status?.configured ? 'Reminders unavailable' : prefs?.enabled ? 'On' : 'Off')
     el('h4Retry').classList.toggle('hide', !error)
     renderSchedule()
   }
@@ -41,14 +41,14 @@
       const asset = status?.assets[symbol]
       const row = document.createElement('div'); row.className = 'item'
       const box = document.createElement('div'); const title = document.createElement('div'); title.className = 't'
-      title.textContent = labels[symbol] + (asset?.reference ? ' · reference' : '')
+      title.textContent = labels[symbol]
       const small = document.createElement('small')
       if (asset?.active && asset.active.close > now) {
         const seconds = Math.max(0, Math.ceil((asset.active.close - now) / 1000))
         const countdown = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60].map((n) => String(n).padStart(2, '0')).join(':')
         const local = new Date(asset.active.close).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })
         small.textContent = `Closes ${local} · ${countdown}`
-      } else small.textContent = asset?.active ? 'Confirming candle close…' : ({ locked: 'Quote access required', unavailable: 'OANDA sync unavailable · no reminders until restored', unconfigured: 'OANDA is not configured', waiting: 'No active OANDA candle · waiting for the next session' }[asset?.status] || 'Syncing with OANDA…')
+      } else small.textContent = asset?.active ? 'Confirming candle close…' : ({ locked: 'Quote access required', unavailable: 'Sync unavailable', unconfigured: 'OANDA is not configured', waiting: 'Market closed' }[asset?.status] || 'Syncing with OANDA…')
       box.append(title, small); row.append(box); return row
     }))
   }

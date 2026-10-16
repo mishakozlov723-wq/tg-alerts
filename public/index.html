@@ -11,7 +11,7 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 :root{--bg:#191919;--txt:#f2f2f0;--mut:rgba(255,255,255,.5);--faint:rgba(255,255,255,.22);--line:rgba(255,255,255,.11);--r:14px;--num:'Outfit','Poppins',-apple-system,'Segoe UI',sans-serif}
-.price,.asset span,input[type=number],.num{font-family:var(--num)}
+.price,.asset span,input[type=number],#level,.num{font-family:var(--num)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0}
 html,body{background:var(--bg)}
 body{color:var(--txt);font-family:'Poppins',-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:400;padding-bottom:96px;-webkit-font-smoothing:antialiased}
@@ -48,7 +48,7 @@ h1{font-size:30px;font-weight:300;letter-spacing:-.015em;margin:8px 0 32px}
 .field{border-bottom:1px solid var(--line);padding:0 0 10px;transition:.2s}
 .field:focus-within{border-color:var(--txt)}
 .field label{display:block;font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--mut);font-weight:500}
-input[type=number]{width:100%;background:none;border:0;padding:8px 0 0;font-size:40px;font-weight:200;color:var(--txt);outline:none;font-variant-numeric:tabular-nums;-moz-appearance:textfield;appearance:textfield}
+input[type=number],#level{width:100%;background:none;border:0;padding:8px 0 0;font-size:40px;font-weight:200;color:var(--txt);outline:none;font-variant-numeric:tabular-nums;-moz-appearance:textfield;appearance:textfield}
 input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;appearance:none;margin:0;display:none}
 input::placeholder{color:var(--faint)}
 .chips{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:20px 0 36px}
@@ -139,7 +139,9 @@ body.ready .rise{opacity:1;transform:none}
 #liveStatus{font-size:12px;color:var(--mut);line-height:1.6;white-space:pre-line}#liveStatus:not(:empty){margin-bottom:16px}#liveRetry{margin-bottom:20px}
 #liveForm{border-top:1px solid var(--line);padding-top:24px;margin-bottom:32px}#liveForm .field{margin-bottom:24px;min-width:0}
 #liveForm textarea,#liveForm input,#liveForm select{background:none;border:0;outline:none;width:100%;max-width:100%;min-width:0;font:400 14px 'Poppins',sans-serif;color:var(--txt);padding:10px 0 0;color-scheme:dark}
-#liveForm textarea{resize:vertical;line-height:1.6}#liveForm select option{background:var(--bg)}
+#liveForm textarea{resize:vertical;line-height:1.6;font-size:16px}
+#liveForm #liveZone{-webkit-appearance:none;appearance:none;display:block;height:48px;font-size:16px;line-height:normal;padding:10px 28px 10px 4px;border-radius:0;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='m1 1 5 5 5-5' fill='none' stroke='%23999' stroke-width='1.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 4px center}
+.live-date-zone{display:grid;grid-template-columns:minmax(0,1fr)}#liveForm select option{background:var(--bg)}
 .live-pair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
 .live-time{display:flex;gap:12px;align-items:center;margin-bottom:12px}.live-time input{flex:1;border-bottom:1px solid var(--line)!important;padding:10px 0!important}.live-time .x{width:36px;height:36px}
 #liveSummary{font-size:11px;color:var(--mut);line-height:1.6;margin:20px 0}
@@ -167,7 +169,7 @@ body.ready .rise{opacity:1;transform:none}
       </div>
       <div class="field">
         <label for="level">Price level</label>
-        <input type="number" id="level" step="any" inputmode="decimal" placeholder="0.00000">
+        <input type="text" id="level" inputmode="text" enterkeyhint="done" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0.00000">
       </div>
       <div class="chips" id="chips"></div>
       <button class="cta" id="create">Create alert</button>
@@ -200,8 +202,8 @@ body.ready .rise{opacity:1;transform:none}
     <div id="liveStatus" role="status" aria-live="polite"></div>
     <button id="liveRetry" class="ed hide" type="button">Reload</button>
     <form id="liveForm" class="hide">
-      <div class="field"><label for="liveText">Reminder</label><textarea id="liveText" rows="2" maxlength="500" placeholder="Take the second phone" required></textarea></div>
-      <div class="live-pair"><div class="field"><label for="liveDate">Start date</label><input id="liveDate" type="date" required></div><div class="field"><label for="liveZone">Timezone</label><select id="liveZone" required></select></div></div>
+      <div class="field"><label for="liveText">Reminder</label><textarea id="liveText" enterkeyhint="done" rows="2" maxlength="500" placeholder="Take the second phone" required></textarea></div>
+      <div class="live-date-zone"><div class="field"><label for="liveDate">Start date</label><input id="liveDate" type="date" required></div><div class="field"><label for="liveZone">Timezone</label><select id="liveZone" required></select></div></div>
       <div class="eyebrow lbl">Time</div><div id="liveTimes"></div><button id="liveAddTime" class="ed" type="button">+ Time</button>
       <div class="eyebrow lbl" style="margin-top:28px">Repeat</div><div class="opt" id="liveRepeat"></div>
       <div class="field hide" id="liveCountField"><label for="liveCount" id="liveCountLabel">Days</label><input id="liveCount" type="number" min="1" max="90" step="1" value="2" required></div>
@@ -300,7 +302,7 @@ let levelAnim = 0
 function animateLevel(target, dur = 2200, clearAtEnd = false) {
   cancelAnimationFrame(levelAnim)
   const digits = cfg.symbols[sym].digits
-  const cur = parseFloat($('#level').value)
+  const cur = readLevel()
   const from = isFinite(cur) ? cur : (shown[sym] ?? target)
   const t0 = performance.now()
   const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2)
@@ -313,6 +315,31 @@ function animateLevel(target, dur = 2200, clearAtEnd = false) {
   levelAnim = requestAnimationFrame(step)
 }
 $('#level').addEventListener('input', () => cancelAnimationFrame(levelAnim))
+function readLevel() {
+  const value = $('#level').value.trim().replace(',', '.')
+  return /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ? Number(value) : NaN
+}
+// Native keyboard action only ends editing; it never creates/saves anything.
+function dismissInput(input) {
+  input.blur()
+  try { if (tg?.isVersionAtLeast?.('9.1')) tg.hideKeyboard?.() } catch {}
+}
+for (const id of ['level', 'liveText']) {
+  const input = document.getElementById(id)
+  let multiline = false
+  input.addEventListener('keyup', () => { multiline = false })
+  input.addEventListener('keydown', (event) => {
+    multiline = event.shiftKey
+    if (event.key !== 'Enter' || event.isComposing || multiline) return
+    event.preventDefault(); dismissInput(input)
+  })
+  input.addEventListener('beforeinput', (event) => {
+    if (event.isComposing || !['insertLineBreak', 'insertParagraph'].includes(event.inputType)) return
+    // Hardware Shift+Enter can still insert a new line in Live.
+    if (multiline) return
+    event.preventDefault(); dismissInput(input)
+  })
+}
 
 function renderChips() {
   const pip = cfg.symbols[sym].pip
@@ -326,7 +353,7 @@ $('#d-above').onclick = () => setDir('above'); $('#d-below').onclick = () => set
 function setDir(d) { dir = d; $('#d-above').classList.toggle('on', d === 'above'); $('#d-below').classList.toggle('on', d === 'below'); renderChips() }
 
 $('#create').onclick = async () => {
-  const level = parseFloat($('#level').value)
+  const level = readLevel()
   if (!isFinite(level)) return toast('Enter a price level')
   const r = await api('/api/alerts', { method: 'POST', body: JSON.stringify({ symbol: sym, dir, level }) })
   if (r.error === 'limit') return toast(`Limit reached: ${r.max} active alerts. Delete one first.`)

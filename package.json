@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "check": "node check.js"
+    "check": "node check.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "dukascopy-node": "^1.45.0"

@@ -48,8 +48,8 @@ News preferences, price alerts and quote sources are unchanged.
   from Capital.com. Existing `OANDA_XAUUSD`/`OANDA_GER40` overrides apply. If those
   instruments are unavailable on the OANDA account, their timers report unavailable;
   no other broker is silently substituted.
-- DXY is synthetic in this app. Its reminder explicitly uses EUR/USD's **OANDA FX
-  reference interval**, not a native DXY candle or the ICE market's own candle.
+- DXY is not offered for H4 reminders. Old DXY selections are ignored; its prices
+  and price-level alerts remain unchanged.
 - This explicitly implements OANDA v20's 17:00 New York alignment. A chart using
   different candle/session settings must be compared before assuming a visual match.
 
@@ -85,3 +85,41 @@ calls: timezone/DST boundary cases, both US/Europe transition gaps, weekend/holi
 suppression, completion checks, delivery windows, preferences, durable deduplication,
 quote authorization, and a subprocess API/scheduler regression test with mocked feeds.
 CI runs the suite on Node 20 and 24.
+
+## Live personal reminders
+The **Live** tab adds personal Telegram reminders. Tap **+**, enter text, a start
+date, timezone and up to six times. Repeat once, daily, on weekdays or weekly;
+choose 1–90 notification days/weeks. Two times × three days = six notifications.
+Pause/resume, edit and delete are available. No premium quote purchase is needed.
+
+- The timezone defaults to the device IANA timezone and is saved per reminder.
+  Recurrences keep local wall time across DST, not a fixed +24-hour offset.
+  Ambiguous fall times occur once (earlier occurrence). Nonexistent spring times
+  are rejected with the exact date/time so a different time can be selected.
+- API routes `/api/live` (GET/POST) and `/api/live/:id` (PUT/PATCH/DELETE) use the
+  existing authenticated user. Server validates all dates, times, lengths and limits.
+  All times must be future at creation/replacement. Editing replaces the schedule;
+  past deliveries are not replayed. Count means days/weeks, not total messages.
+- Separate Redis hash `tg-alerts:{live}:reminders:v1` stores each reminder including
+  its finite schedule and delivery outcomes. Lua compare-and-swap prevents stale
+  edits and duplicate claims across overlapping deployments. Max 100 saved reminders
+  per user, including finished ones. Delete old reminders to free space.
+- Without Redis, atomic writes use `DB_FILE + '.live.json'`: persistent disk and a
+  single process are required. Redis failures fail closed, never fall back to empty
+  state. Prefer configured Upstash on Render Free, whose local disk is ephemeral.
+- A client-generated UUID makes create retries idempotent. Edits/deletes require
+  the latest revision. Ambiguous saves show Reload; the UI never auto-repeats a write.
+- Scheduler checks every 10 seconds while the process is running, independently
+  of market hours/OANDA. Sends delayed reminders up to 15 minutes late; older ones
+  become **Missed**. Paused occurrences are not replayed on resume.
+- Claim is durable before Telegram send. Confirmed response -> Sent; rejection ->
+  Failed; timeout/crash -> Delivery not confirmed. Unknown sends are not blindly
+  retried: Telegram cannot guarantee exactly-once sendMessage. Errors do not expose
+  private reminder text in admin logs. Messages are plain text, not HTML.
+- **Render sleep still applies.** The Mini App may be closed, but the server must
+  remain awake to deliver on time. No paid hosting, keep-alive service or billing
+  changes are introduced here. This is not a replacement for a guaranteed alarm.
+- Tests include real Redis Lua (when redis-server is installed), competing runners,
+  durable restart, paused/deleted reminders, storage/network failures, DST and an
+  isolated HTTP API + real scheduler subprocess with mock Telegram. CI installs
+  Redis and runs on Node 20/24; no real accounts or user notifications are touched.

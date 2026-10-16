@@ -28,10 +28,10 @@ test('authenticated API, news/alert regression, real scheduler with stubbed OAND
     assert.equal((await call('/api/h4/settings',{method:'POST',body:prefs})).status,200)
     assert.deepEqual((await call('/api/settings')).data,news)
     assert.equal((await call('/api/h4/settings',{uid:'5678'})).data.enabled,false)
-    assert.equal((await call('/api/h4/settings',{method:'POST',body:{...prefs,symbols:['DXY']}})).status,403)
+    assert.equal((await call('/api/h4/settings',{method:'POST',body:{...prefs,symbols:['DXY']}})).status,400)
     assert.equal((await call('/api/h4/settings',{method:'POST',body:{...prefs,lead:['5']}})).status,400)
     const status=(await call('/api/h4/status')).data
-    assert.equal(status.assets.EURUSD.status,'live');assert.equal(status.assets.DXY.status,'locked')
+    assert.equal(status.assets.EURUSD.status,'live');assert.equal(status.assets.DXY,undefined)
     assert.equal(status.assets.EURUSD.active.close,Date.parse('2026-06-15T17:00Z'))
     const alert=await call('/api/alerts',{method:'POST',body:{symbol:'EURUSD',level:2,dir:'above'}})
     assert.equal(alert.status,200);assert.equal((await call('/api/alerts')).data.length,1)

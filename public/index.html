@@ -120,6 +120,19 @@ body.ready .rise{opacity:1;transform:none}
 @keyframes secIn{from{opacity:0;transform:translateY(16px)}}
 
 .access-gate{position:fixed;inset:0;z-index:80;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:24px}.access-box{width:min(100%,420px);padding:28px 0}.access-box .eyebrow{margin-bottom:10px}.access-box h2{font-size:28px;font-weight:300;letter-spacing:-.02em;margin:0 0 12px}.access-box p{font-size:12px;color:var(--mut);line-height:1.7;margin:0 0 28px}.access-code{width:100%;height:58px;border:1px solid var(--line);border-radius:14px;background:none;color:var(--txt);font-family:var(--num);font-size:28px;letter-spacing:.22em;text-align:center;outline:none}.access-code:focus{border-color:var(--txt)}.access-submit{width:100%;margin-top:12px;padding:17px;border:0;border-radius:16px;background:var(--txt);color:var(--bg);font:600 11px 'Poppins';letter-spacing:.16em;text-transform:uppercase}.access-status{min-height:18px;margin-top:14px;text-align:center;color:var(--mut);font-size:11px}.access-gate.hide{display:none}
+
+/* H4 settings: the same monochrome hairlines, typography and option chips. */
+.setting-row{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:22px 0;border-top:1px solid var(--line)}
+.setting-row b{display:block;font-size:14px;font-weight:500}.setting-row small{display:block;font-size:11px;font-weight:300;color:var(--mut);line-height:1.7;margin-top:5px}
+.switch{position:relative;flex:none;width:44px;height:26px;border:1px solid var(--line);border-radius:20px;background:none;padding:3px}
+.switch::after{content:'';display:block;width:18px;height:18px;border-radius:50%;background:var(--mut);transition:transform .18s}
+.switch[aria-checked=true]{border-color:var(--txt)}.switch[aria-checked=true]::after{background:var(--txt);transform:translateX(18px)}
+.switch:disabled,.opt button:disabled{opacity:.3;cursor:default}.h4-copy{font-size:12px;font-weight:300;line-height:1.8;color:var(--mut);margin:0 0 24px}
+.h4-group{padding-top:28px;border-top:1px solid var(--line)}.h4-group .opt{margin-bottom:26px}
+#h4State{font-size:11px;line-height:1.7;min-height:20px;color:var(--mut);margin:10px 0 24px;white-space:pre-line}
+#h4Schedule .item{padding:16px 0}#h4Schedule .t{font-size:13px}#h4Schedule small{font-size:11px;line-height:1.7}
+#h4Retry{background:none;border:1px solid var(--line);border-radius:12px;padding:9px 16px;font-size:12px;margin-bottom:20px}
+.tabs button{font-size:10px;letter-spacing:.12em}
 </style>
 </head>
 <body>
@@ -167,12 +180,27 @@ body.ready .rise{opacity:1;transform:none}
     <div class="opt" id="cur"></div>
     <div id="nlist"></div>
   </section>
+  <section id="p-settings" class="hide">
+    <div class="eyebrow">Preferences</div>
+    <h1>Settings.</h1>
+    <div class="eyebrow lbl">H4 candle reminders</div>
+    <p class="h4-copy">Stay in sync with OANDA. New York daylight-saving changes are handled automatically.</p>
+    <div class="setting-row"><div><b>H4 reminders</b><small>Delivered to your Telegram chat.</small></div><button id="h4Enabled" class="switch" type="button" role="switch" aria-checked="false" aria-label="H4 reminders" disabled></button></div>
+    <div id="h4State" role="status" aria-live="polite">Loading settings…</div>
+    <button id="h4Retry" class="hide" type="button">Retry</button>
+    <div class="h4-group"><div class="eyebrow lbl">Assets</div><div class="opt" id="h4Assets"></div></div>
+    <div class="h4-group"><div class="eyebrow lbl">Notify before (min)</div><div class="opt" id="h4Lead"></div></div>
+    <div class="setting-row"><div><b>At candle close</b><small>Only after OANDA confirms completion.</small></div><button id="h4AtClose" class="switch" type="button" role="switch" aria-checked="true" aria-label="Notify at candle close" disabled></button></div>
+    <div class="h4-group"><div class="eyebrow lbl">OANDA timing</div><p class="h4-copy">H4 aligned to 17:00 America/New_York. Times below are shown in your device timezone. No active candle, no countdown.<br>DXY uses OANDA FX reference timing, not a native DXY candle.</p><div id="h4Schedule"></div></div>
+    <p class="h4-copy" style="margin-top:24px">Open the bot and tap /start once to allow messages. Delivery requires the server to be running; missed reminders are not replayed.</p>
+  </section>
 </div>
 
 <nav class="tabs"><div>
   <button class="on" data-t="new">New</button>
   <button data-t="alerts">Alerts</button>
   <button data-t="news">News</button>
+  <button data-t="settings">Settings</button>
 </div></nav>
 
 <script src="/intro.js"></script>
@@ -218,7 +246,7 @@ async function goTab(t, btn) {
   old.style.transition = 'opacity .28s ease'
   old.style.opacity = 0
   try {
-    await Promise.all([t === 'alerts' ? loadAlerts() : t === 'news' ? loadNews() : null, new Promise((r) => setTimeout(r, 300))])
+    await Promise.all([t === 'alerts' ? loadAlerts() : t === 'news' ? loadNews() : t === 'settings' ? window.H4Settings.load() : null, new Promise((r) => setTimeout(r, 300))])
   } catch (e) { console.error(e) }
   old.classList.add('hide'); old.style.opacity = ''; old.style.transition = ''
   const sec = $('#p-' + t)
@@ -390,5 +418,6 @@ function showErr(e) {
   whenReady()
 } catch (e) { showErr(e); whenReady() } })()
 </script>
+<script src="/h4-settings.js"></script>
 </body>
 </html>

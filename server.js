@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { SYMBOLS, prices, startPrices, setPrice, feedStatus } from './prices.js'
 import { getNews } from './news.js'
 import { verifyAccessToken } from './shared/access-token.mjs'
+import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner } from './h4.js'
+import { createH4Store } from './h4-store.js'
 
 // Silver is a paid quote from Capital.com (epic can be changed with CAPITAL_EPIC_XAGUSD, shift with OFFSET_XAGUSD).
 if (!SYMBOLS.XAGUSD) SYMBOLS.XAGUSD = { label: 'Silver', premium: true, pip: 0.01, digits: 3, base: 50, capital: process.env.CAPITAL_EPIC_XAGUSD || 'SILVER', offset: Number(process.env.OFFSET_XAGUSD || 0), duka: ['xagusd'] }
@@ -43,7 +45,9 @@ const redis = async (cmd) => {
     signal: AbortSignal.timeout(8000),
   })
   if (!r.ok) throw new Error(`Redis HTTP ${r.status}`)
-  return (await r.json()).result
+  const reply = await r.json()
+  if (reply.error) throw new Error('Redis command failed')
+  return reply.result
 }
 if (USE_REDIS) {
   try {
@@ -132,6 +136,42 @@ async function notify(userId, text) {
       })
     } catch (e) { console.error('[telegram]', e.message) }
   }
+}
+
+// ---------- OANDA H4 reminders (independent from quote alerts/news) ----------
+const h4Source = createOandaH4()
+let h4Store = null, h4StoreJob = null, h4StoreRetry = 0
+async function getH4Store() {
+  if (h4Store) return h4Store
+  if (h4StoreJob) return h4StoreJob
+  if (Date.now() < h4StoreRetry) return null
+  h4StoreJob = createH4Store({ redis: USE_REDIS ? redis : null, file: DB_FILE + '.h4.json' })
+    .then((store) => (h4Store = store))
+    .catch((e) => { h4StoreRetry = Date.now() + 30000; console.error('[h4 storage]', e.message); return null })
+    .finally(() => { h4StoreJob = null })
+  return h4StoreJob
+}
+const h4Allowed = (uid, symbol) => Boolean(H4_ASSETS[symbol]) && allowedSyms(uid).includes(symbol)
+async function deliverH4(uid, text) {
+  // Unlike legacy notify(), check Telegram's response and bound the request time.
+  if (!BOT_TOKEN || !/^\d+$/.test(uid)) throw new Error('Telegram delivery is not configured for this user')
+  const result = await tg('sendMessage', { chat_id: uid, text }, 10000)
+  if (!result.ok) throw new Error(`Telegram H4 delivery rejected (${result.error_code || 'unknown'})`)
+  db.events.push({ id: db.seq++, userId: uid, text, ts: Date.now() })
+  if (db.events.length > 500) db.events.splice(0, db.events.length - 500)
+  save()
+}
+const runH4 = createH4Runner({
+  getSettings: () => h4Store?.all() || {}, source: h4Source,
+  allowed: h4Allowed, claim: (key, now, context) => h4Store.claim(key, now, context), deliver: deliverH4,
+  onError: (message) => adminNotify(message, 'h4-error', 300000),
+})
+async function checkH4() {
+  if (!h4Source.configured || !BOT_TOKEN) return
+  const store = await getH4Store()
+  if (!store) return
+  await store.refresh()
+  await runH4()
 }
 
 // ---------- check alerts on every tick ----------
@@ -468,6 +508,27 @@ const server = http.createServer(async (req, res) => {
     if (!db.settings[uid]) { db.settings[uid] = defaultSettings(); save() }
     return json(res, 200, db.settings[uid])
   }
+  if (p === '/api/h4/settings') {
+    const store = await getH4Store()
+    if (!store) return json(res, 503, { error: 'H4 settings storage is unavailable. Please retry.' })
+    if (req.method === 'GET') return json(res, 200, store.get(uid))
+    if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' })
+    let settings
+    try { settings = normalizeH4Settings(await body(req)) }
+    catch (e) { return json(res, 400, { error: e.message }) }
+    // Existing quote ownership remains authoritative both here and at send time.
+    if (settings.enabled && settings.symbols.some((s) => !h4Allowed(uid, s))) return json(res, 403, { error: 'Quote access required' })
+    if (settings.enabled && (!h4Source.configured || !BOT_TOKEN || !/^\d+$/.test(uid))) return json(res, 503, { error: 'OANDA H4 or Telegram delivery is not configured.' })
+    try { return json(res, 200, await store.set(uid, settings)) }
+    catch { return json(res, 503, { error: 'Could not confirm saving H4 settings. Reload to verify.' }) }
+  }
+  if (p === '/api/h4/status' && req.method === 'GET') {
+    const permitted = Object.keys(H4_ASSETS).filter((s) => h4Allowed(uid, s))
+    const states = await h4Source.get(permitted)
+    return json(res, 200, { source: 'OANDA', timezone: 'America/New_York', dailyAlignment: 17,
+      configured: h4Source.configured && Boolean(BOT_TOKEN) && /^\d+$/.test(uid), serverTime: Date.now(),
+      assets: Object.fromEntries(Object.entries(H4_ASSETS).map(([s, meta]) => [s, states[s] || { ...meta, status: 'locked', active: null }])) })
+  }
   if (p === '/api/events') {
     const since = Number(url.searchParams.get('since') || 0)
     return json(res, 200, db.events.filter((e) => e.userId === uid && e.id > since))
@@ -528,6 +589,8 @@ async function watchPrices() {
 }
 setInterval(() => watchPrices().catch((e) => console.error('[watch]', e.message)), Number(process.env.WATCHDOG_MS || 30000))
 setInterval(() => checkNews().catch((e) => console.error('[news]', e.message)), 20000)
+setInterval(() => checkH4().catch((e) => console.error('[h4]', e.message)), 10000)
+checkH4().catch((e) => console.error('[h4]', e.message))
 server.listen(PORT, () => {
   console.log(`Open in browser: http://localhost:${PORT}`)
   adminNotify('🟢 Service started', 'start', 60000)

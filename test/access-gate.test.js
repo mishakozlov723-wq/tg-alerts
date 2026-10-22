@@ -28,7 +28,7 @@ function boot({ saved = null, valid = false, authApi = '/local-access', redeemed
     dispatchEvent: (event) => listeners.get(event.type)?.(),
   }
   const context = vm.createContext({
-    window, Event, console: { error: (e) => errors.push(e) }, performance: { now: () => 0 },
+    window, Event, AbortSignal, console: { error: (e) => errors.push(e) }, performance: { now: () => 0 },
     document: { querySelector: (id) => id === '#splash' && element(id).removed ? null : element(id), querySelectorAll: () => [], getElementById: (id) => element('#' + id), addEventListener() {}, body: element('body') },
     localStorage: { getItem: (k) => storage.get(k), setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) },
     setTimeout: (fn, ms) => { timers.push({ fn, ms }) }, setInterval() {}, requestAnimationFrame() {}, cancelAnimationFrame() {},

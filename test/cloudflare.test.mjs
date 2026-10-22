@@ -92,7 +92,7 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   for(const p of ['/','/index.html','/setup.html']){
    const r=await request(p,null,{},'GET');assert.equal(r.status,200)
    for(const m of r.data.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g))new Script(m[1])
-   if(p!=='/setup.html'){assert.equal(r.headers.get('etag'),null);assert.equal(r.headers.get('content-encoding'),null);assert.ok(r.data.includes("fetch('/api/access/redeem'"));assert.ok(r.data.includes('ACCESS_SIGNING_SECRET в Alerts не совпадает'));assert.ok(!r.data.includes("catch { status.textContent = 'Invalid or already used code.' }"));assert.ok(r.data.includes('}, 1000)'));assert.ok(r.data.includes('delete shown[k]'));assert.ok(!r.data.includes('snapshots ~10s'));assert.ok(r.data.includes('streaming'))}
+   if(p!=='/setup.html'){assert.equal(r.headers.get('etag'),null);assert.equal(r.headers.get('content-encoding'),null);assert.ok(r.data.includes("fetch('/api/access/redeem'"));assert.ok(r.data.includes('ACCESS_SIGNING_SECRET в Alerts не совпадает'));assert.ok(!r.data.includes("catch { status.textContent = 'Invalid or already used code.' }"));assert.ok(r.data.includes('}, 1000)'));assert.ok(r.data.includes('last quote · reconnecting / market closed'));assert.ok(!r.data.includes('snapshots ~10s'));assert.ok(r.data.includes('streaming'))}
   }
  })
  test('activation requires correct bot, then scheduler runs independently of UI',async()=>{

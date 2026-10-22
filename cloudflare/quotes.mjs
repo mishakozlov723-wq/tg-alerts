@@ -1,4 +1,5 @@
-// OANDA upstream HTTP stream; prices are memory-only. Never checkpoint each tick.
+// OANDA stream with bounded REST reconciliation and a periodic display cache.
+// Cached prices never dispatch alert ticks or acquire new timestamps on restore.
 export function dxyFormula(q) {
  return 50.14348112*q.EUR_USD**-.576*q.USD_JPY**.136*q.GBP_USD**-.119*q.USD_CAD**.091*q.USD_SEK**.042*q.USD_CHF**.036
 }
@@ -18,6 +19,18 @@ export function createQuoteFeed(env){
  const host=env.OANDA_ENV==='live'?'https://api-fxtrade.oanda.com':'https://api-fxpractice.oanda.com'
  const streamHost=env.OANDA_ENV==='live'?'https://stream-fxtrade.oanda.com':'https://stream-fxpractice.oanda.com'
  let account=env.OANDA_ACCOUNT,discovered=false,extra=[],cst='',sec='',loginAt=0,capNext=0,capFails=0,lastMessage=0,connected=false,source='unavailable'
+ let revision=0,savedRevision=0,nextRefresh=0
+ const identity=JSON.stringify([env.OANDA_ENV||'practice',env.OANDA_ACCOUNT||'',env.OANDA_SIDE||'bid',capOn,env.CAPITAL_ENV||'demo',env.CAPITAL_SIDE||'mid',SYMBOLS])
+ const fresh=s=>trade[s]===true&&!!prices[s]&&Date.now()-prices[s].observedAt<30000&&Date.now()-prices[s].dataTs<=30000
+ function restore(raw){
+  try{
+   const v=JSON.parse(raw);if(v.version!==1||v.identity!==identity)return
+   const valid=q=>q&&Number.isFinite(q.price)&&q.price>0&&Number.isFinite(q.dataTs)&&Number.isFinite(q.observedAt)&&q.dataTs<=Date.now()+60000&&q.observedAt<=Date.now()+60000
+   for(const [s,q]of Object.entries(v.prices||{}))if(SYMBOLS[s]&&valid(q)){prices[s]={...q};trade[s]=false}
+   for(const s of PAIRS)if(Number.isFinite(v.mids?.[s])&&v.mids[s]>0&&Number.isFinite(v.times?.[s])){mids[s]=v.mids[s];times[s]=v.times[s];trade[s]=false}
+  }catch{} // Optional cache corruption must not replace business data.
+ }
+ async function checkpoint(store){if(revision===savedRevision)return;const n=revision;await store(['SET','tg-alerts:quotes:v1',JSON.stringify({version:1,identity,prices,mids,times})]);savedRevision=n}
  const unavailable=(symbols,list)=>{feedStatus.missing=[...new Set([...feedStatus.missing.filter(s=>!symbols.includes(s)),...list])]}
  const stamp=raw=>typeof raw==='string'&&/^\d+(\.\d+)?$/.test(raw)?Number(raw)*1000:Date.parse(raw)
  const marketOpen=()=>{const d=new Date(),day=d.getUTCDay(),h=d.getUTCHours();return day!==6&&!(day===5&&h>=21)&&!(day===0&&h<22)}
@@ -30,13 +43,13 @@ export function createQuoteFeed(env){
   discovered=true
  }
  async function setPrice(sym,value,onTick,meta={}){
-  if(!SYMBOLS[sym]||!Number.isFinite(value))return
-  const now=Date.now();prices[sym]={price:Number(value.toFixed(SYMBOLS[sym].digits)),ts:now,observedAt:now,...meta}
+  if(!SYMBOLS[sym]||!Number.isFinite(value)||value<=0)return
+  const now=Date.now();prices[sym]={price:Number(value.toFixed(SYMBOLS[sym].digits)),ts:now,observedAt:now,...meta};revision++
   if(onTick)await onTick(sym,prices[sym].price)
  }
  async function ingest(p,onTick){
   const bid=Number(p.bids?.[0]?.price??p.closeoutBid),ask=Number(p.asks?.[0]?.price??p.closeoutAsk),dataTs=stamp(p.time)
-  if(!Number.isFinite(bid)||!Number.isFinite(ask)||!Number.isFinite(dataTs)||dataTs<(times[p.instrument]||0))return
+  if(!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask<=0||!Number.isFinite(dataTs)||dataTs>Date.now()+60000||dataTs<(times[p.instrument]||0))return
   const valid=p.tradeable===true&&Date.now()-dataTs<=30000&&dataTs<=Date.now()+60000
   times[p.instrument]=dataTs
   if(PAIRS.includes(p.instrument)){mids[p.instrument]=(bid+ask)/2;trade[p.instrument]=valid}
@@ -54,7 +67,14 @@ export function createQuoteFeed(env){
   await discover();const d=await get(`/v3/accounts/${encodeURIComponent(account)}/pricing?instruments=${encodeURIComponent([...PAIRS,...extra].join(','))}`)
   for(const p of d.prices||[])await dispatch(()=>ingest(p,onTick))
  }
+ async function refresh(onTick,dispatch=fn=>fn()){
+  if(Date.now()<nextRefresh)return
+  // Reconcile even a healthy heartbeat-only stream. One request per 20s at most.
+  nextRefresh=Date.now()+20000
+  try{await pull(onTick,dispatch);errors.oanda=null;if(!connected)source='polling_fallback'}catch(e){if(e.storageFailure||e.retrySafe)throw e;errors.oanda='OANDA_feed_unavailable'}
+ }
  async function stream(onTick,signal,dispatch=fn=>fn()){
+  await refresh(onTick,dispatch)
   while(!signal.aborted){
    let reader,timer,cancelRead;const controller=new AbortController()
    const stop=()=>controller.abort();signal.addEventListener('abort',stop,{once:true})
@@ -110,10 +130,10 @@ export function createQuoteFeed(env){
       capFails=0;errors.capital=null
     } catch(e) { capFails++;capNext=Date.now()+Math.min(300000,10000*2**Math.min(capFails,5));errors.capital='Capital feed unavailable';throw e }
   }
- return {SYMBOLS,prices,feedStatus,setPrice,stream,capital:pollCapital,marketOpen,
+ return {SYMBOLS,prices,feedStatus,setPrice,stream,refresh,restore,checkpoint,capital:pollCapital,marketOpen,
   async probe(){await discover();const d=await get(`/v3/accounts/${encodeURIComponent(account)}/pricing?instruments=${encodeURIComponent(PAIRS.join(','))}`);if(!Array.isArray(d.prices)||!['EUR_USD','GBP_USD'].every(s=>d.prices.some(p=>p.instrument===s)))throw new Error('broker_prices_unavailable');await pollCapital(null);if(capOn&&errors.capital)throw new Error('Capital_feed_unavailable');return {oanda:true,capital:capOn}},
   tradeable:s=>trade[s]===true,
-  fresh:s=>trade[s]===true&&!!prices[s]&&Date.now()-prices[s].observedAt<30000,
+  fresh,
   status:()=>({mode:'stream',source,connected,lastMessage,displayIntervalMs:1000,capitalIntervalMs:1500,pricing:{oandaEnvironment:env.OANDA_ENV||'practice',oandaSide:env.OANDA_SIDE||'bid',capitalSide:env.CAPITAL_SIDE||'mid',quotes:Object.fromEntries(['EURUSD','GBPUSD'].filter(s=>prices[s]).map(s=>[s,{receivedAgeMs:Date.now()-prices[s].observedAt,sourceAgeMs:Date.now()-prices[s].dataTs,spreadPips:Number(prices[s].spreadPips?.toFixed(3)),tradeable:prices[s].tradeable}]))},errors:{...errors},tradeable:{...trade}}),
  }
 }

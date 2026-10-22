@@ -445,11 +445,23 @@ function frame(now) {
 }
 
 async function tick() {
-  prices = await api('/api/prices')
-  for (const k in prices) if (shown[k] == null) shown[k] = prices[k].price
-  const ev = await api('/api/events?since=' + lastEvent)
-  for (const e of ev) { lastEvent = Math.max(lastEvent, e.id); if (!tg?.initData) toast(e.text); if (!$('#p-alerts').classList.contains('hide')) loadAlerts() }
+  if (ticking) return
+  ticking = true
+  try {
+    const next = await fetch('/api/prices', { headers: H, signal: AbortSignal.timeout(10000) })
+    if (!next.ok) throw new Error('quotes_unavailable')
+    const snapshot = await next.json()
+    if (!snapshot || snapshot.error || Array.isArray(snapshot)) throw new Error('quotes_unavailable')
+    // A partial response must not erase previously received assets.
+    for (const k in snapshot) if (cfg.symbols[k] && Number.isFinite(snapshot[k]?.price)) prices[k] = snapshot[k]
+    for (const k in prices) if (shown[k] == null) shown[k] = prices[k].price
+    const ev = await api('/api/events?since=' + lastEvent, { signal: AbortSignal.timeout(10000) })
+    if (Array.isArray(ev)) for (const e of ev) { lastEvent = Math.max(lastEvent, e.id); if (!tg?.initData) toast(e.text); if (!$('#p-alerts').classList.contains('hide')) loadAlerts() }
+  } finally { ticking = false }
 }
+let ticking = false
+document.addEventListener('visibilitychange', () => { if (!document.hidden && cfg) tick().catch(() => {}) })
+window.addEventListener('online', () => { if (cfg) tick().catch(() => {}) })
 
 // intro: splash plays at least MIN ms, then fades out and the app rises in
 document.querySelectorAll('#p-new > *, .tabs').forEach((el, i) => { el.classList.add('rise'); el.style.setProperty('--d', (0.2 + i * 0.1) + 's') })
@@ -482,10 +494,12 @@ function showErr(e) {
 ;(async () => { try {
   cfg = await api('/api/config')
   if (cfg.authRequired && !(await ensureAccess(cfg.authApi))) { whenReady(); return }
-  prices = await api('/api/prices')
-  for (const k in prices) shown[k] = prices[k].price
-  const old = await api('/api/events?since=0'); lastEvent = old.reduce((m, e) => Math.max(m, e.id), 0)
-  await api('/api/settings')
+  // A temporary quote outage must not prevent starting the polling loop.
+  prices = await api('/api/prices', { signal: AbortSignal.timeout(10000) }).catch(() => ({}))
+  if (!prices || prices.error || Array.isArray(prices)) prices = {}
+  for (const k in prices) if (cfg.symbols[k] && Number.isFinite(prices[k]?.price)) shown[k] = prices[k].price
+  const old = await api('/api/events?since=0', { signal: AbortSignal.timeout(10000) }).catch(() => [])
+  lastEvent = Array.isArray(old) ? old.reduce((m, e) => Math.max(m, e.id), 0) : 0
   renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)
   if (cfg.mock) {
     $('#dbg').classList.remove('hide')

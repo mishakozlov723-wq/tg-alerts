@@ -130,8 +130,11 @@ export class AlertsEngine extends DurableObject{
     const stream=core.stream(controller.signal,dispatch)
     const reminders=(async()=>{while(!controller.signal.aborted){try{await dispatch(()=>core.housekeeping())}catch(e){if(e.storageFailure)throw e;if(!e.retrySafe&&e.name!=='AbortError')throw e};await sleep(10000,controller.signal)}})()
     const capital=(async()=>{while(!controller.signal.aborted){try{await dispatch(()=>core.capital())}catch(e){if(e.storageFailure)throw e};await sleep(1500,controller.signal)}})()
+    // REST reconciliation runs independently of stream heartbeats. Network waits
+    // stay outside the mutation queue; only ingestion is serialized.
+    const quotes=(async()=>{while(!controller.signal.aborted){await core.refreshQuotes(dispatch);await sleep(10000,controller.signal)}})()
     const fail=p=>p.catch(e=>{controller.abort();throw e})
-    const result=await Promise.allSettled([fail(stream),fail(reminders),fail(capital)])
+    const result=await Promise.allSettled([fail(stream),fail(reminders),fail(capital),fail(quotes)])
     if(result.some(r=>r.status==='rejected'&&r.reason?.storageFailure)){failed=true;this.invalidate()}
     if(Date.now()-(await this.ctx.storage.get('lastCleanup')||0)>3600000){
      this.local.cleanup();const entries=await this.ctx.storage.list({prefix:'update:',limit:5000}),expired=[...entries].filter(([,v])=>Date.now()-v.at>7*86400000).map(([k])=>k)
@@ -188,11 +191,12 @@ async function handle(req,env){
     html=html.replace('<div class="psub" id="psub">&nbsp;</div>', '<div class="psub" id="psub">&nbsp;</div><p style="font-size:11px;color:#aaa;margin:-24px 0 24px">OANDA streaming quotes. Display refreshes every second. Broker and Telegram delays still apply.</p>')
     html=html.replace(/\/\/ smooth glide of displayed prices[\s\S]*?(?=async function tick\(\))/, `// Display actual snapshots only, never animated intermediate prices or stale quotes.
 function frame() {
-  for (const k in shown) if (!prices[k] || !cfg.symbols[k] || !prices[k].tradeable || Date.now() - prices[k].observedAt > 30000) delete shown[k]
-  for (const k in prices) if (cfg.symbols[k] && prices[k].tradeable && Date.now() - prices[k].observedAt <= 30000) shown[k] = prices[k].price
+  for (const k in shown) if (!cfg.symbols[k]) delete shown[k]
+  for (const k in prices) if (cfg.symbols[k] && Number.isFinite(prices[k].price)) shown[k] = prices[k].price
+  const state = s => { const q = prices[s]; return !q ? 'loading quote' : q.stale || !q.tradeable || Date.now() - q.observedAt > 30000 || Date.now() - q.dataTs > 30000 ? 'last quote · reconnecting / market closed' : 'streaming' }
   $('#price').textContent = fmt(sym, shown[sym])
-  $('#psub').textContent = sym + (shown[sym] == null ? ' · waiting for fresh quote' : ' · streaming')
-  document.querySelectorAll('.asset').forEach(t => { t.querySelector('span').textContent = fmt(t.dataset.s, shown[t.dataset.s]) })
+  $('#psub').textContent = sym + ' · ' + state(sym)
+  document.querySelectorAll('.asset').forEach(t => { const s=t.dataset.s, stale=state(s) !== 'streaming'; t.querySelector('span').textContent = fmt(s, shown[s]) + (shown[s] != null && stale ? ' · last' : ''); t.title = state(s); t.dataset.stale = String(stale) })
   requestAnimationFrame(frame)
 }
 

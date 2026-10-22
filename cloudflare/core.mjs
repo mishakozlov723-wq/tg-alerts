@@ -36,6 +36,7 @@ const USE_REDIS = true
 const saved = await redis(['GET','tg-alerts-db'])
 if (saved === null) throw Object.assign(new Error('storage_not_initialized'), { status: 503 })
 let db = validateMain(JSON.parse(saved))
+quoteFeed.restore(await redis(['GET','tg-alerts:quotes:v1']))
 const save = async () => {
   try { await redis(['SET', 'tg-alerts-db', JSON.stringify(db)]) }
   catch { const e = new Error('durable_storage_unavailable'); e.storageFailure = true; throw e }
@@ -72,7 +73,7 @@ const bundleOk = (k) => Boolean(BUNDLES[k]) && BUNDLES[k].syms.every((s) => isPr
 const priceOf = (k) => (BUNDLES[k] ? BUNDLES[k].price : PREMIUM_PRICE)
 const nice = (s) => (BUNDLES[s] ? BUNDLES[s].label : SYMBOLS[s].label && SYMBOLS[s].label !== s ? `${SYMBOLS[s].label} (${s})` : s)
 const ownsQuote = (uid, s) => Boolean(uid) && (db.owned[uid] || []).includes(s)
-const allowedSyms = (uid) => Object.keys(SYMBOLS).filter((s) => !isPremium(s) || (available(s) && ownsQuote(uid, s)))
+const allowedSyms = (uid) => Object.keys(SYMBOLS).filter((s) => !isPremium(s) || ownsQuote(uid, s))
 const symbolsFor = (uid) => Object.fromEntries(allowedSyms(uid).map((s) => [s, { pip: SYMBOLS[s].pip, digits: SYMBOLS[s].digits }]))
 
 // ---------- notifications ----------
@@ -454,7 +455,7 @@ async function handleHttp(req, res) {
     const uid = getUserId(req)
     if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' })
     const ok = new Set(allowedSyms(uid))
-    return json(res, 200, Object.fromEntries(Object.entries(prices).filter(([k,v]) => ok.has(k) && Date.now() - (v.observedAt || v.ts || 0) < 30000)))
+    return json(res, 200, Object.fromEntries(Object.entries(prices).filter(([k]) => ok.has(k)).map(([k,v]) => [k,{...v,stale:!quoteFeed.fresh(k)}])))
   }
   if (p === '/api/news') { const uid = getUserId(req); if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' }); return json(res, 200, await getNews()) }
   if (p === '/api/access/check') { const uid = getUserId(req); return uid ? json(res, 200, { ok: true, userId: uid }) : json(res, 401, { error: 'access_required' }) }
@@ -601,8 +602,10 @@ return {
   feedStatus() { return quoteFeed.status() },
   async stream(signal, dispatch) { return quoteFeed.stream(onTick, signal, dispatch) },
   async capital() { return quoteFeed.capital(onTick) },
+  async refreshQuotes(dispatch) { return quoteFeed.refresh(onTick, dispatch) },
   async housekeeping() {
-    // No per-second database checkpoint. Only real user mutations/deliveries write.
+    // Bounded display-cache checkpoint; never write on every market tick.
+    await quoteFeed.checkpoint(redis)
     for (const event of db.events.filter(e=>e.delivery==='pending')) {
       if (event.expiresAt && event.expiresAt <= Date.now() || event.orderId && db.orders[event.orderId]?.status !== 'paid') {
         event.delivery = 'expired'; await save(); continue

@@ -8,9 +8,11 @@ import { createLiveStore, LiveConflict } from '../live-store.js'
 import { newReminder, liveIdValid, liveView, createLiveRunner } from '../live.js'
 import { createQuoteFeed } from './quotes.mjs'
 import { createNews } from './news.mjs'
-import { makeRedis, loadLegacy } from './redis.mjs'
+import { validateMain } from './storage.mjs'
 
 export async function createEngine(env) {
+const fetch = env.FETCH || globalThis.fetch
+const engineBornAt=Date.now()
 const quoteFeed = createQuoteFeed(env)
 const { SYMBOLS, prices, feedStatus, setPrice } = quoteFeed
 const { getNews } = createNews(env)
@@ -28,10 +30,12 @@ const ADMIN_CHAT_ID = String(env.ADMIN_CHAT_ID || '1011596614')
 const PREMIUM_PRICE = Number(env.PREMIUM_PRICE_RUB || 350)
 const PAY_DETAILS = env.PAY_DETAILS || ''
 
-// Storage is the existing Redis data source. Never fall back to an empty database.
-const redis = makeRedis(env)
+// Durable local SQLite. Existing helper storage operations stay atomic locally.
+const redis = env.LOCAL_STORE.command
 const USE_REDIS = true
-let db = await loadLegacy(redis, env.ALLOW_EMPTY_STATE === 'true')
+const saved = await redis(['GET','tg-alerts-db'])
+if (saved === null) throw Object.assign(new Error('storage_not_initialized'), { status: 503 })
+let db = validateMain(JSON.parse(saved))
 const save = async () => {
   try { await redis(['SET', 'tg-alerts-db', JSON.stringify(db)]) }
   catch { const e = new Error('durable_storage_unavailable'); e.storageFailure = true; throw e }
@@ -72,21 +76,24 @@ const allowedSyms = (uid) => Object.keys(SYMBOLS).filter((s) => !isPremium(s) ||
 const symbolsFor = (uid) => Object.fromEntries(allowedSyms(uid).map((s) => [s, { pip: SYMBOLS[s].pip, digits: SYMBOLS[s].digits }]))
 
 // ---------- notifications ----------
+function trimEvents() {
+  while(db.events.length>500){const i=db.events.findIndex(e=>!['pending','attempting'].includes(e.delivery));if(i<0)break;db.events.splice(i,1)}
+}
 async function notify(userId, text) {
   const event = { id: db.seq++, userId, text, ts: Date.now(), delivery: 'attempting' }
   db.events.push(event)
-  if (db.events.length > 500) db.events.splice(0, db.events.length - 500)
+  trimEvents()
   await save()
   if (BOT_TOKEN && /^\d+$/.test(userId)) {
     try { const result = await tg('sendMessage', { chat_id: userId, text }); event.delivery = result.ok ? 'sent' : 'failed' }
-    catch (e) { event.delivery = e.definite ? 'failed' : 'unknown' }
+    catch (e) { event.delivery = e.retrySafe ? 'pending' : e.definite ? 'failed' : 'unknown' }
   } else event.delivery = 'failed'
   await save()
   return event.delivery
 }
 
 // ---------- OANDA H4 reminders (independent from quote alerts/news) ----------
-const h4Source = createOandaH4({ env })
+const h4Source = createOandaH4({ env, fetcher: fetch })
 let h4Store = null, h4StoreJob = null, h4StoreRetry = 0
 async function getH4Store() {
   if (h4Store) return h4Store
@@ -102,10 +109,12 @@ const h4Allowed = (uid, symbol) => Boolean(H4_ASSETS[symbol]) && allowedSyms(uid
 async function deliverH4(uid, text) {
   // Unlike legacy notify(), check Telegram's response and bound the request time.
   if (!BOT_TOKEN || !/^\d+$/.test(uid)) throw new Error('Telegram delivery is not configured for this user')
-  const result = await tg('sendMessage', { chat_id: uid, text }, 10000)
+  let result
+  try { result = await tg('sendMessage', { chat_id: uid, text }, 10000) }
+  catch(e) { if(e.retrySafe){ db.events.push({id:db.seq++,userId:uid,text,ts:Date.now(),delivery:'pending'}); trimEvents(); await save() }; throw e }
   if (!result.ok) { const e = new Error('Telegram delivery rejected'); e.definite = true; throw e }
   db.events.push({ id: db.seq++, userId: uid, text, ts: Date.now() })
-  if (db.events.length > 500) db.events.splice(0, db.events.length - 500)
+  trimEvents()
   await save()
 }
 const runH4 = createH4Runner({
@@ -204,8 +213,8 @@ function getUserId(req) {
 
 // ---------- Telegram bot: persistent keyboard under the input field ----------
 const TG_API = env.TG_API || 'https://api.telegram.org'
-const WEBAPP_URL = env.WEBAPP_URL || env.RENDER_EXTERNAL_URL || 'https://tg-alerts-2khy.onrender.com'
-const WELCOME = `Price alerts for EURUSD and GBPUSD.\n\nUp to ${BASE_ALERTS} alerts for free, ${PRO_ALERTS} with any paid bundle. Snapshot price checks about every 10 seconds (brief crossings may be missed), plus red news from Forex Factory, all in one place.\n\nWant Gold, Silver, GER40 or DXY? Tap Add quote.`
+const WEBAPP_URL = env.WEBAPP_URL || env.RENDER_EXTERNAL_URL || 'https://tg-alerts.retocker.workers.dev'
+const WELCOME = `Price alerts for EURUSD and GBPUSD.\n\nUp to ${BASE_ALERTS} alerts for free, ${PRO_ALERTS} with any paid bundle. Streaming OANDA price alerts and red news from Forex Factory, all in one place.\n\nWant Gold, Silver, GER40 or DXY? Tap Add quote.`
 const MY_ALERTS_TEXT = 'My alerts'
 const ADD_TEXT = 'Add quote'
 const MYQ_TEXT = 'My quotes'
@@ -406,7 +415,7 @@ async function handleHttp(req, res) {
   const url = new URL(req.url, 'http://x')
   const p = url.pathname
   if (p === '/health') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok') }
-  if (p === '/api/config') return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: symbolsFor(getUserId(req)), quoteMode: 'snapshot', checkIntervalMs: 10000 })
+  if (p === '/api/config') return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: symbolsFor(getUserId(req)), quoteMode: 'stream', displayIntervalMs: 1000 })
   if (p === '/api/feed-status') return json(res, 200, quoteFeed.status())
   if (p === '/api/prices') {
     const uid = getUserId(req)
@@ -555,32 +564,36 @@ return {
     return result || Response.json({ error: 'not_found' }, { status: 404 })
   },
   async update(update) { await handleUpdate(update) },
-  async tick() {
-    // Broker/API failures don't disable independent Live reminders.
+  async probe() { return quoteFeed.probe() },
+  feedStatus() { return quoteFeed.status() },
+  async stream(signal, dispatch) { return quoteFeed.stream(onTick, signal, dispatch) },
+  async capital() { return quoteFeed.capital(onTick) },
+  async housekeeping() {
+    // No per-second database checkpoint. Only real user mutations/deliveries write.
+    for (const event of db.events.filter(e=>e.delivery==='pending')) {
+      event.delivery='attempting'; await save()
+      try {await tg('sendMessage',{chat_id:event.userId,text:event.text});event.delivery='sent'}
+      catch(e){event.delivery=e.retrySafe?'pending':e.definite?'failed':'unknown';await save();if(e.retrySafe)throw e}
+      await save()
+    }
     await checkLive()
     await checkH4()
-    try { await quoteFeed.poll(onTick) } catch (e) { if (e.storageFailure) throw e /* broker errors exposed through feed-status */ }
     await checkNews()
     await watchFeed()
-    const cutoff = Date.now() - 14 * 86400000
-    const before = Object.keys(db.sentNews).length
-    db.sentNews = Object.fromEntries(Object.entries(db.sentNews).filter(([key]) => {
-      const id = key.split('|'); const ts = Date.parse(id.at(-2)); return !Number.isFinite(ts) || ts >= cutoff
-    }))
-    if (Object.keys(db.sentNews).length !== before) await save()
   },
   async inspect() { const h4 = await getH4Store(), live = await getLiveStore(); if (!h4 || !live) throw new Error('reminder_storage_unavailable'); return { alerts: db.alerts.length, activeAlerts: db.alerts.filter(a=>a.status==='active').length, purchases: Object.keys(db.owned).length, h4Users: Object.keys(h4.all()).length, liveReminders: live.all().length } },
 }
 async function watchFeed() {
+  if(Date.now()-engineBornAt<20000)return // avoid a false outage warning while initial stream connects
   const stale = db.alerts.filter(a => a.status === 'active' && quoteFeed.marketOpen() && !quoteFeed.fresh(a.symbol))
   const users = [...new Set(stale.map(a=>a.userId))]
   if (users.length && !feedDown) {
     feedDown = true; downUsers = users
-    await adminNotify('Price feed unavailable. Snapshot alerts paused until fresh quotes arrive.', 'feed', 300000)
+    await adminNotify('Price feed unavailable. Streaming alerts paused until fresh quotes arrive.', 'feed', 300000)
     for (const uid of users) await notify(uid, '⚠️ Price feed unavailable. Price alerts are paused until fresh quotes arrive.')
   } else if (!users.length && feedDown) {
     feedDown = false
-    for (const uid of downUsers) await notify(uid, '✅ Price feed recovered. Snapshot alerts are active again.')
+    for (const uid of downUsers) await notify(uid, '✅ Price feed recovered. Streaming alerts are active again.')
     downUsers = []
   }
 }

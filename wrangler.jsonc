@@ -13,11 +13,11 @@
   "vars":{
     "PRICE_SOURCE":"oanda",
     "OANDA_ENV":"practice",
-    "OANDA_SIDE":"mid",
+    "OANDA_SIDE":"bid",
     "REQUIRE_ACCESS":"true",
     "AUTH_API_URL":"https://retocker-access.retocker.workers.dev",
     "WEBAPP_URL":"https://tg-alerts.retocker.workers.dev",
-    "SNAPSHOT_QUOTES_APPROVED":"false"
+    "STREAM_WINDOW_SECONDS":"540"
   },
   "observability":{"enabled":false}
 }

@@ -1,30 +1,16 @@
 export function createNews(env) {
+const fetch = env.FETCH || globalThis.fetch
 // Красные новости из открытого календаря Forex Factory (JSON-фид faireconomy).
 // Источники по порядку: 1) зеркало на GitHub (NEWS_MIRROR_URL), 2) прямой источник.
-// Кэш в памяти и в Upstash; при ошибке держим старые данные и повторяем с растущей паузой.
+// Кэш в памяти и локальной SQLite; при ошибке держим старые данные и повторяем с растущей паузой.
 const URL_THIS = env.NEWS_URL || 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
 const HOSTS = [URL_THIS, URL_THIS.replace('://nfs.', '://cdn-nfs.')]
 const TTL = 30 * 60e3
 const RETRY_MIN = 10 * 60e3
 const RETRY_MAX = 60 * 60e3
 const NEWS_KEY = 'tg-alerts-news'
-const RURL = env.UPSTASH_REDIS_REST_URL
-const RTOKEN = env.UPSTASH_REDIS_REST_TOKEN
 let cache = { ts: 0, failedAt: 0, fails: 0, items: [], loaded: false }
-
-async function redis(cmd) {
-  if (!RURL || !RTOKEN) return null
-  try {
-    const r = await fetch(RURL, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${RTOKEN}`, 'content-type': 'application/json' },
-      body: JSON.stringify(cmd),
-      signal: AbortSignal.timeout(8000),
-    })
-    const j = await r.json()
-    return j.result ?? null
-  } catch { return null }
-}
+const redis = cmd => env.LOCAL_STORE.command(cmd)
 
 async function fetchJson(url) {
   let r

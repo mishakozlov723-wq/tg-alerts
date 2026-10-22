@@ -156,8 +156,9 @@ async function handle(req,env){
       const b=await data(req)
       if(!/^\d{6}$/.test(String(b.code||'')))return json(400,{error:'invalid_code'})
       const url=new URL('/api/verify-code',env.AUTH_API_URL||'https://retocker-access.retocker.workers.dev')
-      const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({project:'alerts',code:b.code}),signal:AbortSignal.timeout(10000)})
-      const j=await r.json()
+      let r,j
+      try{r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({project:'alerts',code:b.code}),redirect:'manual',signal:AbortSignal.timeout(10000)})}catch{return json(502,{error:'access_connection_failed'})}
+      try{j=await r.json()}catch{return json(502,{error:'access_unexpected_response'})}
       if(j.token&&!verifyAccessToken(j.token,'alerts',env.ACCESS_SIGNING_SECRET))return json(503,{error:'access_signing_secret_mismatch'})
       return json(r.status,j)
     }
@@ -173,7 +174,7 @@ async function handle(req,env){
     html=html.replace("renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)","cfg = await api('/api/config'); renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)")
     html=html.replace('if (shown[k] == null) continue','if (shown[k] == null || !cfg.symbols[k]) continue')
     html=html.replace("fetch(authApi.replace(/\\/$/, '') + '/api/verify-code'", "fetch('/api/access/redeem'")
-    html=html.replace("catch { status.textContent = 'Invalid or already used code.' }", "catch (e) { const messages = { access_signing_secret_mismatch: 'Ошибка настройки: ACCESS_SIGNING_SECRET в Alerts не совпадает с Access. Этот код уже погашен; после исправления получите новый.', too_many_attempts: 'Слишком много попыток. Подождите 15 минут и получите новый код.', invalid_or_expired_code: 'Код истёк или уже использован. Получите новый код Alerts в Access.', invalid_code: 'Введите шестизначный код Alerts.', configuration_incomplete: 'В Alerts не заполнены обязательные настройки.', service_unavailable: 'Access временно недоступен. Повторите позже.' }; status.textContent = messages[e.message] || 'Не удалось выполнить вход. Проверьте соединение и адрес приложения. Если повторяется — сообщите об ошибке.' }")
+    html=html.replace("catch { status.textContent = 'Invalid or already used code.' }", "catch (e) { const messages = { access_signing_secret_mismatch: 'Ошибка настройки: ACCESS_SIGNING_SECRET в Alerts не совпадает с Access. Этот код уже погашен; после исправления получите новый.', too_many_attempts: 'Слишком много попыток. Подождите 15 минут и получите новый код.', invalid_or_expired_code: 'Код истёк или уже использован. Получите новый код Alerts в Access.', invalid_code: 'Введите шестизначный код Alerts.', configuration_incomplete: 'В Alerts не заполнены обязательные настройки.', access_connection_failed: 'Нет связи между Alerts и Access. Сообщите об этой ошибке.', access_unexpected_response: 'Cloudflare вернул неожиданный ответ вместо Access. Сообщите об этой ошибке.', service_unavailable: 'Access вернул внутреннюю ошибку. Сообщите об этой ошибке.' }; status.textContent = messages[e.message] || 'Не удалось выполнить вход. Проверьте соединение и адрес приложения. Если повторяется — сообщите об ошибке.' }")
     html=html.replace("setInterval(() => tick().catch(() => {}), 400)", "setInterval(() => {if (!document.hidden) tick().catch(() => {})}, 1000)")
     html=html.replace("sym + ' · live'", "sym + ' · streaming'")
     html=html.replace('<div class="psub" id="psub">&nbsp;</div>', '<div class="psub" id="psub">&nbsp;</div><p style="font-size:11px;color:#aaa;margin:-24px 0 24px">OANDA streaming quotes. Display refreshes every second. Broker and Telegram delays still apply.</p>')

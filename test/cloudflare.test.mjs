@@ -52,7 +52,7 @@ async function outbound(req){
  throw new Error('No live network permitted: '+u.hostname+u.pathname)
 }
 async function boot(extra={}){
- mf=new Miniflare(convertV4MiniflareOptions({name:'alerts-test',unsafeInspectDurableObjects:true,modules:true,scriptPath:'.cf-test/worker.js',compatibilityDate:'2026-10-22',compatibilityFlags:['nodejs_compat'],durableObjects:{ALERTS:{className:'AlertsEngine',useSQLite:true}},resourcePersistencePath:persist,bindings:{...env,...extra},serviceBindings:{ASSETS:async()=>new Response(readFileSync('public/index.html'),{headers:{'content-type':'text/html',etag:'artificial','content-encoding':'identity'}})},outboundService:outbound}))
+ mf=new Miniflare(convertV4MiniflareOptions({name:'alerts-test',unsafeInspectDurableObjects:true,modules:true,scriptPath:'.cf-test/worker.js',compatibilityDate:'2026-10-22',compatibilityFlags:['nodejs_compat','global_fetch_strictly_public'],durableObjects:{ALERTS:{className:'AlertsEngine',useSQLite:true}},resourcePersistencePath:persist,bindings:{...env,...extra},serviceBindings:{ASSETS:async()=>new Response(readFileSync('public/index.html'),{headers:{'content-type':'text/html',etag:'artificial','content-encoding':'identity'}})},outboundService:outbound}))
  await mf.ready;sql=await mf.unsafeGetDurableObjectStorage('alerts-test','AlertsEngine',{name:'production'})
 }
 before(()=>boot())

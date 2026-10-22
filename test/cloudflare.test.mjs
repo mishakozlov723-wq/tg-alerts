@@ -91,7 +91,7 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   for(const p of ['/','/index.html','/setup.html']){
    const r=await request(p,null,{},'GET');assert.equal(r.status,200)
    for(const m of r.data.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g))new Script(m[1])
-   if(p!=='/setup.html'){assert.equal(r.headers.get('etag'),null);assert.equal(r.headers.get('content-encoding'),null);assert.ok(r.data.includes("fetch('/api/access/redeem'"));assert.ok(r.data.includes('}, 1000)'));assert.ok(r.data.includes('delete shown[k]'));assert.ok(!r.data.includes('snapshots ~10s'));assert.ok(r.data.includes('streaming'))}
+   if(p!=='/setup.html'){assert.equal(r.headers.get('etag'),null);assert.equal(r.headers.get('content-encoding'),null);assert.ok(r.data.includes("fetch('/api/access/redeem'"));assert.ok(r.data.includes('ACCESS_SIGNING_SECRET в Alerts не совпадает'));assert.ok(!r.data.includes("catch { status.textContent = 'Invalid or already used code.' }"));assert.ok(r.data.includes('}, 1000)'));assert.ok(r.data.includes('delete shown[k]'));assert.ok(!r.data.includes('snapshots ~10s'));assert.ok(r.data.includes('streaming'))}
   }
  })
  test('activation requires correct bot, then scheduler runs independently of UI',async()=>{
@@ -134,7 +134,7 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
  })
  test('Access redemption and bounded bodies; existing H4/Live routes remain separate',async()=>{
   assert.equal((await request('/api/access/redeem',{code:'123456'})).status,200)
-  accessToken=sign(uid,'calendar');assert.equal((await request('/api/access/redeem',{code:'123456'})).status,503);accessToken=null
+  accessToken=sign(uid,'alerts').replace(/.$/, 'z');const mismatch=await request('/api/access/redeem',{code:'123456'});assert.equal(mismatch.status,503);assert.equal(mismatch.data.error,'access_signing_secret_mismatch');accessToken=null
   assert.equal((await api('alerts',{note:'x'.repeat(13000)},'POST')).status,413)
   assert.deepEqual((await api('h4/settings')).data.symbols,['EURUSD']);assert.equal((await api('live')).status,200)
  })

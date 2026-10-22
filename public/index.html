@@ -249,9 +249,9 @@ const ACCESS_KEY = 'retocker.access.alerts.v1'
 const savedAccess = localStorage.getItem(ACCESS_KEY)
 if (savedAccess) H['x-access-token'] = savedAccess
 async function ensureAccess(authApi) {
-  if (!authApi) { $('#accessStatus').textContent = 'Access server is not configured.'; $('#accessGate').classList.remove('hide'); return false }
+  if (!authApi) { $('#accessStatus').textContent = 'Access server is not configured.'; showAccessGate(); return false }
   if (H['x-access-token']) { const check = await api('/api/access/check'); if (check.ok) return true; localStorage.removeItem(ACCESS_KEY); delete H['x-access-token'] }
-  $('#accessGate').classList.remove('hide')
+  showAccessGate()
   const form = $('#accessForm'); const input = $('#accessCode'); const status = $('#accessStatus'); input.focus()
   if (!form.dataset.bound) { form.dataset.bound = '1'; form.onsubmit = async (e) => { e.preventDefault(); const code = input.value.trim(); if (!/^\d{6}$/.test(code)) { status.textContent = 'Enter the 6-digit code.'; return } status.textContent = 'Checking code…'; try { const result = await fetch(authApi.replace(/\/$/, '') + '/api/verify-code', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: 'alerts', code }) }).then((r) => r.json()); if (!result.token) throw new Error(result.error || 'invalid_code'); localStorage.setItem(ACCESS_KEY, result.token); H['x-access-token'] = result.token; $('#accessGate').classList.add('hide'); status.textContent = ''; window.dispatchEvent(new Event('retocker-access-ready')) } catch { status.textContent = 'Invalid or already used code.' } } }
   return new Promise((resolve) => window.addEventListener('retocker-access-ready', () => resolve(true), { once: true }))
@@ -458,7 +458,13 @@ function reveal() {
   if (revealed) return; revealed = true
   $('#splash').classList.add('out')
   document.body.classList.add('ready')
-  setTimeout(() => $('#splash').remove(), 1400)
+  setTimeout(() => $('#splash')?.remove(), 1400)
+}
+function showAccessGate() {
+  $('#accessGate').classList.remove('hide')
+  // Login needs user input: never wait for appReady or the intro to finish.
+  reveal()
+  $('#splash')?.remove()
 }
 const introDone = window.playIntro($('#introStage'), 'combo').catch(() => {})
 let appOk

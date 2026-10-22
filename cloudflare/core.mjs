@@ -79,17 +79,36 @@ const symbolsFor = (uid) => Object.fromEntries(allowedSyms(uid).map((s) => [s, {
 function trimEvents() {
   while(db.events.length>500){const i=db.events.findIndex(e=>!['pending','attempting'].includes(e.delivery));if(i<0)break;db.events.splice(i,1)}
 }
-async function notify(userId, text) {
-  const event = { id: db.seq++, userId, text, ts: Date.now(), delivery: 'attempting' }
+function enqueue(userId, text, extra = {}) {
+  const event = { id: db.seq++, userId, text, ts: Date.now(), delivery: 'pending', ...extra }
   db.events.push(event)
   trimEvents()
-  await save()
-  if (BOT_TOKEN && /^\d+$/.test(userId)) {
-    try { const result = await tg('sendMessage', { chat_id: userId, text }); event.delivery = result.ok ? 'sent' : 'failed' }
-    catch (e) { event.delivery = e.retrySafe ? 'pending' : e.definite ? 'failed' : 'unknown' }
+  return event
+}
+async function deliverEvent(event) {
+  if (event.delivery !== 'pending' || (event.retryAt || 0) > Date.now()) return event.delivery
+  event.delivery = 'attempting'
+  await save() // Unknown outcomes after this checkpoint must never be blindly retried.
+  if (BOT_TOKEN && /^\d+$/.test(event.userId)) {
+    try {
+      await tg('sendMessage', { chat_id: event.userId, text: event.text, ...(event.reply_markup ? { reply_markup: event.reply_markup } : {}) })
+      event.delivery = 'sent'; delete event.retryAt
+    } catch (e) {
+      event.delivery = e.retrySafe ? 'pending' : e.definite ? 'failed' : 'unknown'
+      if (e.retrySafe) event.retryAt = Date.now() + (e.retryAfterMs || 0)
+      await save()
+      if (e.retrySafe && !e.definite) throw e // Preserve outbound-budget rotation.
+      return event.delivery
+    }
   } else event.delivery = 'failed'
   await save()
   return event.delivery
+}
+async function notify(userId, text) {
+  const event = enqueue(userId, text)
+  await save()
+  // Price processing must finish even when the current outbound budget is exhausted.
+  try { return await deliverEvent(event) } catch (e) { if (!e.retrySafe) throw e; return event.delivery }
 }
 
 // ---------- OANDA H4 reminders (independent from quote alerts/news) ----------
@@ -111,7 +130,7 @@ async function deliverH4(uid, text) {
   if (!BOT_TOKEN || !/^\d+$/.test(uid)) throw new Error('Telegram delivery is not configured for this user')
   let result
   try { result = await tg('sendMessage', { chat_id: uid, text }, 10000) }
-  catch(e) { if(e.retrySafe){ db.events.push({id:db.seq++,userId:uid,text,ts:Date.now(),delivery:'pending'}); trimEvents(); await save() }; throw e }
+  catch(e) { if(e.retrySafe){ enqueue(uid, text, { retryAt: Date.now() + (e.retryAfterMs || 0) }); await save() }; throw e }
   if (!result.ok) { const e = new Error('Telegram delivery rejected'); e.definite = true; throw e }
   db.events.push({ id: db.seq++, userId: uid, text, ts: Date.now() })
   trimEvents()
@@ -178,14 +197,14 @@ async function checkNews() {
     for (const n of items) {
       if (!s.currencies.includes(n.currency)) continue
       const minsLeft = (n.time - now) / 60000
-      for (const lead of s.lead) {
-        if (minsLeft > lead || minsLeft <= lead - 1.5) continue
-        const key = `${userId}|${n.id}|${lead}`
-        if (db.sentNews[key]) continue
-        db.sentNews[key] = 1
-        await save()
+      // Catch up until the event starts; coalesce overdue leads into one message.
+      const due = s.lead.filter(lead => minsLeft > 0 && minsLeft <= lead && !db.sentNews[`${userId}|${n.id}|${lead}`])
+      if (due.length) {
+        for (const lead of due) db.sentNews[`${userId}|${n.id}|${lead}`] = 1
         const extra = n.forecast || n.previous ? `\nForecast: ${n.forecast || '-'} · Prev: ${n.previous || '-'}` : ''
-        await notify(userId, `🔴 ${n.currency} ${n.title}\nIn ${lead} min${extra}`)
+        const event = enqueue(userId, `🔴 ${n.currency} ${n.title}\nIn ${Math.max(1, Math.ceil(minsLeft))} min${extra}`, { expiresAt: n.time })
+        await save() // Deduplication markers and queued message commit together.
+        await deliverEvent(event)
       }
     }
   }
@@ -233,7 +252,15 @@ const tg = async (method, payload, ms = 15000) => {
     body: JSON.stringify(payload), signal: AbortSignal.timeout(ms),
   })
   const data = await r.json()
-  if (!r.ok || !data.ok) { const e = new Error('Telegram delivery rejected'); e.definite = true; throw e }
+  if (!r.ok || !data.ok) {
+    const e = new Error('Telegram delivery rejected'); e.definite = true
+    // Only a structured rejection proves that sendMessage was not accepted.
+    // An unstructured proxy error or a network timeout remains ambiguous.
+    e.retrySafe = data.ok === false && (r.status === 429 || data.error_code === 429 || r.status >= 500 || data.error_code >= 500)
+    const seconds = Number(data.parameters?.retry_after)
+    if (e.retrySafe) e.retryAfterMs = Number.isFinite(seconds) && seconds > 0 ? Math.max(1000, seconds * 1000) : 10000
+    throw e
+  }
   return data
 }
 
@@ -320,17 +347,23 @@ async function handleCallback(q) {
   if ((m = data.match(/^paid:(\d+)$/))) {
     const o = db.orders[m[1]]
     if (!o || o.userId !== uid) return ans('Not found')
-    if (o.status === 'paid') return ans('Already sent, please wait')
+    if (o.status === 'paid') {
+      const event = db.events.find(e => e.id === o.adminEventId)
+      if (event?.delivery === 'pending') await deliverEvent(event)
+      return ans(event?.delivery === 'pending' ? 'Queued. Waiting for confirmation' : 'Already sent, please wait')
+    }
     if (o.status !== 'new') return ans('This request is closed')
-    o.status = 'paid'; o.paidAt = Date.now(); await save()
-    await ans('Sent. Waiting for confirmation')
-    const v = payView(o)
-    await edit(v.text, v.markup)
-    await tg('sendMessage', {
-      chat_id: ADMIN_CHAT_ID,
-      text: `💰 Payment request #${o.id}\n${who(o)}\n${nice(o.symbol)} · ${priceOf(o.symbol)} ₽`,
+    o.status = 'paid'; o.paidAt = Date.now()
+    const event = enqueue(ADMIN_CHAT_ID, `💰 Payment request #${o.id}\n${who(o)}\n${nice(o.symbol)} · ${priceOf(o.symbol)} ₽`, {
+      orderId: o.id,
       reply_markup: { inline_keyboard: [[{ text: '✅ Approve', callback_data: `ok:${o.id}` }, { text: '✕ Decline', callback_data: `no:${o.id}` }]] },
     })
+    o.adminEventId = event.id
+    await save() // Persist paid state and admin outbox before any Telegram call.
+    await deliverEvent(event)
+    await ans(event.delivery === 'pending' ? 'Queued. Waiting for confirmation' : 'Sent. Waiting for confirmation')
+    const v = payView(o)
+    await edit(v.text, v.markup)
     return
   }
   if ((m = data.match(/^cancel:(\d+)$/))) {
@@ -571,10 +604,10 @@ return {
   async housekeeping() {
     // No per-second database checkpoint. Only real user mutations/deliveries write.
     for (const event of db.events.filter(e=>e.delivery==='pending')) {
-      event.delivery='attempting'; await save()
-      try {await tg('sendMessage',{chat_id:event.userId,text:event.text});event.delivery='sent'}
-      catch(e){event.delivery=e.retrySafe?'pending':e.definite?'failed':'unknown';await save();if(e.retrySafe)throw e}
-      await save()
+      if (event.expiresAt && event.expiresAt <= Date.now() || event.orderId && db.orders[event.orderId]?.status !== 'paid') {
+        event.delivery = 'expired'; await save(); continue
+      }
+      await deliverEvent(event)
     }
     await checkLive()
     await checkH4()

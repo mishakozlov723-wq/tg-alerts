@@ -1,0 +1,23 @@
+{
+  "$schema":"node_modules/wrangler/config-schema.json",
+  "name":"tg-alerts",
+  "main":"cloudflare/worker.mjs",
+  "compatibility_date":"2026-10-22",
+  "compatibility_flags":["nodejs_compat","global_fetch_strictly_public"],
+  "workers_dev":true,
+  "preview_urls":false,
+  "assets":{"directory":"./public","binding":"ASSETS","run_worker_first":true},
+  "durable_objects":{"bindings":[{"name":"ALERTS","class_name":"AlertsEngine"}]},
+  "migrations":[{"tag":"v1","new_sqlite_classes":["AlertsEngine"]}],
+  "triggers":{"crons":["*/5 * * * *"]},
+  "vars":{
+    "PRICE_SOURCE":"oanda",
+    "OANDA_ENV":"practice",
+    "OANDA_SIDE":"mid",
+    "REQUIRE_ACCESS":"true",
+    "AUTH_API_URL":"https://retocker-access.retocker.workers.dev",
+    "WEBAPP_URL":"https://tg-alerts.retocker.workers.dev",
+    "STREAM_WINDOW_SECONDS":"540"
+  },
+  "observability":{"enabled":false}
+}

@@ -58,6 +58,8 @@
 
 ## Настройка после проверки данных
 
+После смены Production branch существующая сборка может не запуститься сама. Новый commit в `cloudflare-migration` даёт событие push для Workers Builds; в Deployments нужно отдельно убедиться, что сборка действительно появилась и относится к этой ветке.
+
 1. Старый **Render Alerts** оставить остановленным; не трогать рабочий Access на Cloudflare. UptimeRobot для предотвращения сна не нужен. Пробуждение старого Render-процесса может удалить новый webhook и создать конкурирующего обработчика.
 2. Создать отдельный Worker **tg-alerts**, подключить GitHub-репозиторий `tg-alerts`. После создания выбрать Production branch **cloudflare-migration**, не `main`. Build command пустая, Deploy command `npx wrangler deploy`, Root `/`. Успешный static deploy из main ещё не означает работающего бота.
 3. Build API token Cloudflare создаёт автоматически. Никакую строку этого токена искать или вводить в приложение не нужно.

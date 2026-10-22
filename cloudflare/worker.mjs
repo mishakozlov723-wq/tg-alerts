@@ -32,6 +32,14 @@ export class AlertsEngine extends DurableObject{
  constructor(ctx,env){
   super(ctx,env);this.ctx=ctx;this.env=env;this.tail=Promise.resolve();this.coreJob=null;this.window=null;this.epoch=0;this.lastSchedulerRun=null;this.enabled=false
   this.local=createLocalStore(ctx.storage);this.context=new AsyncLocalStorage()
+  // A deployment destroys the in-memory stream, but leaves its future watchdog.
+  // Resume an already activated bot on cold start instead of waiting up to 570s.
+  ctx.blockConcurrencyWhile(async()=>{
+   this.enabled=!!await ctx.storage.get('enabled')
+   if(!this.enabled||missing(env).length||!this.local.initialized())return
+   const alarm=await ctx.storage.getAlarm(),failures=Number(await ctx.storage.get('streamFailures')||0)
+   if(alarm===null||(!failures&&alarm>Date.now()+1000))await ctx.storage.setAlarm(Date.now()+100)
+  })
   // An invocation has a finite outbound budget. Stop/reconnect before the Free
   // 50-subrequest ceiling; HTTP stream chunks are NOT separate fetches.
   this.runtimeEnv={...env,LOCAL_STORE:this.local,FETCH:async(input,init={})=>{

@@ -5,6 +5,7 @@ import {readFileSync,mkdtempSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {Script} from 'node:vm'
+import {AsyncLocalStorage} from 'node:async_hooks'
 import {DatabaseSync} from 'node:sqlite'
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare'
 import {createLocalStore,emptyMain} from '../cloudflare/storage.mjs'
@@ -223,4 +224,15 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
    const core=await createEngine({...env,LOCAL_STORE:store,CAPITAL_API_KEY:'artificial',CAPITAL_IDENTIFIER:'artificial',CAPITAL_PASSWORD:'artificial',FETCH:async(i,o)=>new URL(i).hostname==='api.telegram.org'?Promise.reject(Object.assign(new Error('deferred'),{retrySafe:true})):mockFetch(i,o)})
    await core.capital();const d=JSON.parse(await store.command(['GET','tg-alerts-db']));assert.equal(d.events.length,502);assert.ok(d.events.every(e=>e.delivery==='pending'))
   }finally{db.close()}
+ })
+
+ test('cold deployment resumes enabled scheduler without waiting for old watchdog; stop and failure backoff preserved',async()=>{
+  const source=readFileSync('cloudflare/worker.mjs','utf8'),ctor=source.slice(source.indexOf('export class AlertsEngine'),source.indexOf(' serial(fn)')).replace('export class','class')+'}\nglobalThis.Engine=AlertsEngine'
+  for(const scenario of [{enabled:true,initialized:true,failures:0,expect:true},{enabled:false,initialized:true,failures:0,expect:false},{enabled:true,initialized:false,failures:0,expect:false},{enabled:true,initialized:true,failures:2,expect:false}]){
+   let scheduled=null,ready
+   const old=Date.now()+570000,ctx={storage:{get:async k=>k==='enabled'?scenario.enabled:scenario.failures,getAlarm:async()=>old,setAlarm:async t=>{scheduled=t}},blockConcurrencyWhile:fn=>{ready=fn()}}
+   const sandbox={DurableObject:class{},createLocalStore:()=>({initialized:()=>scenario.initialized}),AsyncLocalStorage,missing:()=>[],Date,Promise,globalThis:null};sandbox.globalThis=sandbox
+   new Script(ctor).runInNewContext(sandbox);new sandbox.Engine(ctx,{});await ready
+   if(scenario.expect)assert.ok(scheduled>=Date.now()-1000&&scheduled<Date.now()+1000);else assert.equal(scheduled,null)
+  }
  })

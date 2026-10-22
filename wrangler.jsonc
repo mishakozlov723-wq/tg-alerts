@@ -13,7 +13,7 @@
   "vars":{
     "PRICE_SOURCE":"oanda",
     "OANDA_ENV":"practice",
-    "OANDA_SIDE":"bid",
+    "OANDA_SIDE":"mid",
     "REQUIRE_ACCESS":"true",
     "AUTH_API_URL":"https://retocker-access.retocker.workers.dev",
     "WEBAPP_URL":"https://tg-alerts.retocker.workers.dev",

@@ -1,0 +1,33 @@
+name: Cloudflare migration checks
+on:
+  push:
+    branches: [cloudflare-migration]
+  pull_request:
+    paths:
+      - 'cloudflare/**'
+      - 'public/**'
+      - 'shared/**'
+      - 'h4*'
+      - 'live*'
+      - 'package*.json'
+      - 'wrangler.jsonc'
+      - 'test/**'
+      - '.github/workflows/cloudflare-tests.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: sudo apt-get update -qq && sudo apt-get install -y redis-server
+      - run: npm test
+      - run: npm run test:cloudflare
+        env:
+          WRANGLER_SEND_METRICS: 'false'

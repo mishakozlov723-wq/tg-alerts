@@ -99,7 +99,7 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   assert.equal((await admin('activate',{confirmBot:'wrong'})).status,400)
   assert.equal((await admin('activate',{confirmBot:botName})).status,200)
   await waitFor(()=>streamStarts>0)
-  const r=await request('/health',null,{},'GET');assert.equal(r.data.storage,'sqlite');assert.equal(r.data.quoteMode,'stream');assert.equal(r.data.enabled,true)
+  const r=await request('/health',null,{},'GET');assert.equal(r.data.storage,'sqlite');assert.equal(r.data.quoteMode,'stream');assert.equal(r.data.enabled,true);assert.equal(r.data.feed.pricing.oandaSide,'bid');assert.equal(r.data.feed.pricing.oandaEnvironment,'practice')
  })
  test('API stays responsive while a long stream alarm is running; tokens and CRUD preserved',async()=>{
   const start=Date.now();assert.equal((await api('prices')).status,200);assert.ok(Date.now()-start<1500)

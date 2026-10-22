@@ -43,7 +43,7 @@ export function createQuoteFeed(env){
   const item=Object.entries(SYMBOLS).find(([,c])=>c.oanda===p.instrument)
   if(item&&!(item[1].premium&&capOn)){
    const [s,c]=item;trade[s]=valid;const side=env.OANDA_SIDE||'bid',v=side==='ask'?ask:side==='mid'?(bid+ask)/2:bid
-   await setPrice(s,v+(c.offset||0),valid?onTick:null,{dataTs,tradeable:valid})
+   await setPrice(s,v+(c.offset||0),valid?onTick:null,{dataTs,tradeable:valid,spreadPips:(ask-bid)/c.pip})
   }
   if(PAIRS.includes(p.instrument)&&PAIRS.every(s=>Number.isFinite(mids[s]))){
    const oldest=Math.min(...PAIRS.map(s=>times[s]));trade.DXY=PAIRS.every(s=>trade[s])&&Date.now()-oldest<=30000
@@ -114,6 +114,6 @@ export function createQuoteFeed(env){
   async probe(){await discover();const d=await get(`/v3/accounts/${encodeURIComponent(account)}/pricing?instruments=${encodeURIComponent(PAIRS.join(','))}`);if(!Array.isArray(d.prices)||!['EUR_USD','GBP_USD'].every(s=>d.prices.some(p=>p.instrument===s)))throw new Error('broker_prices_unavailable');await pollCapital(null);if(capOn&&errors.capital)throw new Error('Capital_feed_unavailable');return {oanda:true,capital:capOn}},
   tradeable:s=>trade[s]===true,
   fresh:s=>trade[s]===true&&!!prices[s]&&Date.now()-prices[s].observedAt<30000,
-  status:()=>({mode:'stream',source,connected,lastMessage,displayIntervalMs:1000,capitalIntervalMs:1500,errors:{...errors},tradeable:{...trade}}),
+  status:()=>({mode:'stream',source,connected,lastMessage,displayIntervalMs:1000,capitalIntervalMs:1500,pricing:{oandaEnvironment:env.OANDA_ENV||'practice',oandaSide:env.OANDA_SIDE||'bid',capitalSide:env.CAPITAL_SIDE||'mid',quotes:Object.fromEntries(['EURUSD','GBPUSD'].filter(s=>prices[s]).map(s=>[s,{receivedAgeMs:Date.now()-prices[s].observedAt,sourceAgeMs:Date.now()-prices[s].dataTs,spreadPips:Number(prices[s].spreadPips?.toFixed(3)),tradeable:prices[s].tradeable}]))},errors:{...errors},tradeable:{...trade}}),
  }
 }

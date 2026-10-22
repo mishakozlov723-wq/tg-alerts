@@ -17,7 +17,8 @@
     "REQUIRE_ACCESS":"true",
     "AUTH_API_URL":"https://retocker-access.retocker.workers.dev",
     "WEBAPP_URL":"https://tg-alerts.retocker.workers.dev",
-    "STREAM_WINDOW_SECONDS":"540"
+    "STREAM_WINDOW_SECONDS":"540",
+    "NEWS_MIRROR_URL":"https://fxfactory.netlify.app/api/calendar"
   },
   "observability":{"enabled":false}
 }

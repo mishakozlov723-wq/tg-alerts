@@ -42,7 +42,7 @@ export class AlertsEngine extends DurableObject{
   })
   // An invocation has a finite outbound budget. Stop/reconnect before the Free
   // 50-subrequest ceiling; HTTP stream chunks are NOT separate fetches.
-  this.runtimeEnv={...env,LOCAL_STORE:this.local,FETCH:async(input,init={})=>{
+  this.runtimeEnv={...env,LOCAL_STORE:this.local,RUNTIME_STATUS:()=>({enabled:this.enabled,active:!!this.window,calls:this.window?.calls||0}),FETCH:async(input,init={})=>{
    const budget=this.context.getStore()
    if(budget){
     if(budget.controller.signal.aborted||budget.calls>=40){budget.controller.abort();throw Object.assign(new Error('outbound_budget_deferred'),{retrySafe:true})}
@@ -54,11 +54,18 @@ export class AlertsEngine extends DurableObject{
  serial(fn){const p=this.tail.then(fn);this.tail=p.catch(()=>{});return p}
  invalidate(){this.epoch++;this.coreJob=null;this.window?.controller.abort()}
  async core(){if(!this.coreJob)this.coreJob=createEngine(this.runtimeEnv).catch(e=>{this.coreJob=null;throw e});return this.coreJob}
- async fetch(req){return this.serial(async()=>{try{return await this.handle(req)}catch(e){if(!e.status||e.storageFailure)this.invalidate();console.error('[alerts] operation failed; credentials/payload omitted');return json(e.status||503,{error:e.status?e.message:'service_or_storage_unavailable'})}})}
+ async fetch(req){return this.serial(async()=>{try{return await this.handle(req)}catch(e){if(!e.status||e.storageFailure){try{await(await this.core()).reportFailure('requests')}catch{};this.invalidate()};console.error('[alerts] operation failed; credentials/payload omitted');return json(e.status||503,{error:e.status?e.message:'service_or_storage_unavailable'})}})}
  async handle(req){
   const p=new URL(req.url).pathname,env=this.env,storage=this.ctx.storage
   if(p==='/internal/recover'){
-   if(await storage.get('enabled')&&!this.window&&await storage.getAlarm()===null)await storage.setAlarm(Date.now()+1000)
+   if(await storage.get('enabled')) {
+    if(!this.window&&await storage.getAlarm()===null)await storage.setAlarm(Date.now()+1000)
+    if(this.local.initialized()) {
+     const core=await this.core()
+     if(await storage.get('monitorSchedulerFailure')) { await core.reportFailure(); await storage.delete('monitorSchedulerFailure') }
+     await core.watchdog()
+    }
+   }
    return json(200,{ok:true})
   }
   if(p==='/health'){
@@ -127,6 +134,7 @@ export class AlertsEngine extends DurableObject{
     const seconds=Math.max(1,Math.min(540,Number(this.env.STREAM_WINDOW_SECONDS)||540))
     await this.ctx.storage.setAlarm(Date.now()+(seconds+30)*1000) // crash watchdog; replaced on clean exit
     const core=await this.core();this.lastSchedulerRun=Date.now();timer=setTimeout(()=>controller.abort(),seconds*1000)
+    if(await this.ctx.storage.get('monitorSchedulerFailure')) { await this.serial(()=>core.reportFailure()); await this.ctx.storage.delete('monitorSchedulerFailure') }
     const stream=core.stream(controller.signal,dispatch)
     const reminders=(async()=>{while(!controller.signal.aborted){try{await dispatch(()=>core.housekeeping())}catch(e){if(e.storageFailure)throw e;if(!e.retrySafe&&e.name!=='AbortError')throw e};await sleep(10000,controller.signal)}})()
     const capital=(async()=>{while(!controller.signal.aborted){try{await dispatch(()=>core.capital())}catch(e){if(e.storageFailure)throw e};await sleep(1500,controller.signal)}})()
@@ -135,12 +143,13 @@ export class AlertsEngine extends DurableObject{
     const quotes=(async()=>{while(!controller.signal.aborted){await core.refreshQuotes(dispatch);await sleep(10000,controller.signal)}})()
     const fail=p=>p.catch(e=>{controller.abort();throw e})
     const result=await Promise.allSettled([fail(stream),fail(reminders),fail(capital),fail(quotes)])
-    if(result.some(r=>r.status==='rejected'&&r.reason?.storageFailure)){failed=true;this.invalidate()}
+    const faults=result.filter(r=>r.status==='rejected'&&r.reason?.name!=='AbortError'&&!r.reason?.retrySafe)
+    if(faults.length){failed=true;try{await this.ctx.storage.put('monitorSchedulerFailure',true)}catch{};this.invalidate()}
     if(Date.now()-(await this.ctx.storage.get('lastCleanup')||0)>3600000){
      this.local.cleanup();const entries=await this.ctx.storage.list({prefix:'update:',limit:5000}),expired=[...entries].filter(([,v])=>Date.now()-v.at>7*86400000).map(([k])=>k)
      if(expired.length)await this.ctx.storage.delete(expired);await this.ctx.storage.put('lastCleanup',Date.now())
     }
-   }catch{failed=true;this.invalidate();console.error('[alerts] stream window failed; will reconnect with backoff')}
+   }catch{failed=true;try{await this.ctx.storage.put('monitorSchedulerFailure',true)}catch{};this.invalidate();console.error('[alerts] stream window failed; will reconnect with backoff')}
    finally{
     clearTimeout(timer);controller.abort();this.window=null
     const previous=Number(await this.ctx.storage.get('streamFailures')||0),failures=failed?previous+1:0

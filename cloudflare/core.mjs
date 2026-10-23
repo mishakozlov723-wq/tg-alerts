@@ -9,13 +9,15 @@ import { newReminder, liveIdValid, liveView, createLiveRunner } from '../live.js
 import { createQuoteFeed } from './quotes.mjs'
 import { createNews } from './news.mjs'
 import { validateMain } from './storage.mjs'
+import { createMonitor, statusKeyboard } from './monitor.mjs'
 
 export async function createEngine(env) {
 const fetch = env.FETCH || globalThis.fetch
 const engineBornAt=Date.now()
 const quoteFeed = createQuoteFeed(env)
 const { SYMBOLS, prices, feedStatus, setPrice } = quoteFeed
-const { getNews } = createNews(env)
+const newsSource = createNews(env)
+const { getNews } = newsSource
 // Silver is a paid quote from Capital.com (epic can be changed with CAPITAL_EPIC_XAGUSD, shift with OFFSET_XAGUSD).
 if (!SYMBOLS.XAGUSD) SYMBOLS.XAGUSD = { label: 'Silver', premium: true, pip: 0.01, digits: 3, base: 50, capital: env.CAPITAL_EPIC_XAGUSD || 'SILVER', offset: Number(env.OFFSET_XAGUSD || 0), duka: ['xagusd'] }
 // DXY is a paid quote too (only EURUSD and GBPUSD are free). Its price is still computed from the OANDA pairs.
@@ -23,7 +25,7 @@ SYMBOLS.DXY.premium = true
 
 const BOT_TOKEN = env.BOT_TOKEN || ''
 const ACCESS_SIGNING_SECRET = env.ACCESS_SIGNING_SECRET || ''
-const AUTH_API_URL = env.AUTH_API_URL || ''
+const AUTH_API_URL = env.AUTH_API_URL || 'https://retocker-access.retocker.workers.dev'
 const REQUIRE_ACCESS = env.REQUIRE_ACCESS === 'true' || Boolean(ACCESS_SIGNING_SECRET)
 const MOCK = (env.PRICE_SOURCE || 'mock') === 'mock'
 const ADMIN_CHAT_ID = String(env.ADMIN_CHAT_ID || '1011596614')
@@ -41,6 +43,15 @@ const save = async () => {
   try { await redis(['SET', 'tg-alerts-db', JSON.stringify(db)]) }
   catch { const e = new Error('durable_storage_unavailable'); e.storageFailure = true; throw e }
 }
+// The monitoring recipient is deliberately explicit; legacy payment fallback is not authorization.
+const monitorAdmin = /^\d+$/.test(String(env.ADMIN_CHAT_ID || '')) ? String(env.ADMIN_CHAT_ID) : ''
+const monitor = await createMonitor({ store: redis, send: text => {
+  if (!monitorAdmin || !BOT_TOKEN) throw new Error('monitor_recipient_unconfigured')
+  return tg('sendMessage', { chat_id: monitorAdmin, text }, 10000)
+} })
+const taskErrors = { h4: false, live: false, news: false }
+let lastHousekeeping = monitor.snapshot().housekeepingAt || 0, accessNext = 0
+const telegramHealth = { success: 0, failure: 0, code: '' }
 // Reset of all purchases: drops purchases and orders, and the alerts on paid quotes. Alerts on free quotes stay.
 async function resetQuotes() {
   const owners = Object.keys(db.owned).filter((u) => (db.owned[u] || []).length).length
@@ -113,7 +124,9 @@ async function notify(userId, text) {
 }
 
 // ---------- OANDA H4 reminders (independent from quote alerts/news) ----------
-const h4Source = createOandaH4({ env, fetcher: fetch })
+const h4Raw = createOandaH4({ env, fetcher: fetch })
+let h4States = {}
+const h4Source = { configured: h4Raw.configured, async get(symbols) { const states = await h4Raw.get(symbols); h4States = states; return states } }
 let h4Store = null, h4StoreJob = null, h4StoreRetry = 0
 async function getH4Store() {
   if (h4Store) return h4Store
@@ -140,13 +153,13 @@ async function deliverH4(uid, text) {
 const runH4 = createH4Runner({
   getSettings: () => h4Store?.all() || {}, source: h4Source,
   allowed: h4Allowed, claim: (key, now, context) => h4Store.claim(key, now, context), deliver: deliverH4,
-  onError: (message) => adminNotify(message, 'h4-error', 300000),
+  onError: () => { taskErrors.h4 = true },
 })
 async function checkH4() {
-  if (!h4Source.configured || !BOT_TOKEN) return
   const store = await getH4Store()
   if (!store) return
   await store.refresh()
+  if (!h4Source.configured || !BOT_TOKEN) return
   await runH4()
 }
 
@@ -159,7 +172,7 @@ async function getLiveStore() {
   liveStoreJob = createLiveStore({ redis: USE_REDIS ? redis : null, file: null })
     .then((store) => {
       liveStore = store
-      liveRunner = createLiveRunner({ store, deliver: deliverH4, onError: (m) => adminNotify(m, 'live-error', 300000) })
+      liveRunner = createLiveRunner({ store, deliver: deliverH4, onError: () => { taskErrors.live = true } })
       return store
     }).catch((e) => { liveRetry = Date.now() + 30000; console.error('[live storage]', e.message); return null })
     .finally(() => { liveStoreJob = null })
@@ -248,13 +261,14 @@ const KEYBOARD = {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const tg = async (method, payload, ms = 15000) => {
+  try {
   const r = await fetch(`${TG_API}/bot${BOT_TOKEN}/${method}`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload), signal: AbortSignal.timeout(ms),
   })
   const data = await r.json()
   if (!r.ok || !data.ok) {
-    const e = new Error('Telegram delivery rejected'); e.definite = true
+    const e = new Error('Telegram delivery rejected'); e.definite = true; e.telegramCode = Number(data.error_code || r.status)
     // Only a structured rejection proves that sendMessage was not accepted.
     // An unstructured proxy error or a network timeout remains ambiguous.
     e.retrySafe = data.ok === false && (r.status === 429 || data.error_code === 429 || r.status >= 500 || data.error_code >= 500)
@@ -262,7 +276,14 @@ const tg = async (method, payload, ms = 15000) => {
     if (e.retrySafe) e.retryAfterMs = Number.isFinite(seconds) && seconds > 0 ? Math.max(1000, seconds * 1000) : 10000
     throw e
   }
+  if (method === 'sendMessage') telegramHealth.success = Date.now()
   return data
+  } catch (e) {
+    if (method === 'sendMessage' && (e.definite || !e.retrySafe)) {
+      telegramHealth.failure = Date.now(); telegramHealth.code = e.telegramCode ? `HTTP ${e.telegramCode}` : 'network_unknown'
+    }
+    throw e
+  }
 }
 
 // ---------- admin messages to the owner in Telegram ----------
@@ -317,12 +338,63 @@ async function grant(uid, s) {
   await save()
 }
 
+async function refreshDiagnostics() {
+  const now = Date.now(), warm = now - engineBornAt < 30000
+  await redis(['GET', 'tg-alerts-db']) // Exercise the real storage, not just in-memory objects.
+  monitor.sample('storage', 'SQLite', 'ok', 'Основная база доступна; записи подтверждаются при реальных изменениях.')
+  const scheduler = env.RUNTIME_STATUS?.()
+  const late = lastHousekeeping && now - lastHousekeeping > 90000
+  monitor.sample('scheduler', 'Фоновые задачи', scheduler?.enabled === false || late || monitor.snapshot().schedulerFailed ? 'error' : lastHousekeeping ? 'ok' : 'unknown',
+    `Последний полный проход: ${lastHousekeeping ? new Date(lastHousekeeping).toISOString() : 'ещё не завершён'}; окно: ${scheduler ? scheduler.active ? 'активно' : 'между запусками' : 'нет runtime-метрики'}; исходящих запросов: ${scheduler?.calls ?? '—'}.`)
+  const needed = new Set(['EURUSD', 'GBPUSD', 'DXY', ...Object.values(db.owned).flat(), ...db.alerts.filter(a => a.status === 'active').map(a => a.symbol)])
+  const stale = [...needed].filter(s => !quoteFeed.fresh(s)), feed = quoteFeed.status(), open = quoteFeed.marketOpen()
+  const lines = [...needed].map(s => { const p = prices[s]; return `${s}: ${!p ? 'нет цены' : `${quoteFeed.fresh(s) ? 'свежая' : 'последняя'}, возраст источника ${Math.max(0, Math.round((now - p.dataTs) / 1000))} с`}` })
+  monitor.sample('quotes', 'Котировки', !open ? 'idle' : stale.length ? warm ? 'unknown' : 'error' : feed.connected ? 'ok' : 'warn',
+    `${open ? 'Рыночная сессия ожидается' : 'Вне общей Forex-сессии (расписания CFD могут отличаться)'}; источник: ${feed.source}.\n${lines.join('\n')}${feed.errors.capital ? '\nCapital: источник недоступен.' : ''}`)
+  const news = newsSource.status()
+  monitor.sample('news', 'Новости', news.mock ? 'warn' : news.fails || taskErrors.news ? 'error' : !news.lastSuccess ? 'unknown' : now - news.lastSuccess > 7200000 ? 'warn' : 'ok',
+    `Источник: ${news.mock ? 'тестовый' : 'Forex Factory / настроенное зеркало'}; последняя успешная загрузка: ${news.lastSuccess ? new Date(news.lastSuccess).toISOString() : 'нет'}; событий: ${news.items}, будущих: ${news.upcoming}; ошибок подряд: ${news.fails}. Пустой календарь сам по себе не ошибка.`)
+  const pending = db.events.filter(e => e.delivery === 'pending'), uncertain = db.events.filter(e => ['failed','unknown','attempting'].includes(e.delivery) && now - (e.ts || 0) < 86400000)
+  const overdue = pending.filter(e => now - (e.ts || now) > 120000)
+  const recentFailure = telegramHealth.failure > telegramHealth.success && now - telegramHealth.failure < 300000
+  monitor.sample('delivery', 'Доставка Telegram', !BOT_TOKEN ? 'error' : overdue.length || uncertain.length || recentFailure ? 'warn' : telegramHealth.success ? 'ok' : 'unknown',
+    `В очереди: ${pending.length}, старше 2 мин: ${overdue.length}; failed/unknown/attempting за 24 ч: ${uncertain.length}. Последний подтверждённый sendMessage: ${telegramHealth.success ? new Date(telegramHealth.success).toISOString() : 'пока нет'}; последняя ошибка: ${telegramHealth.code || 'нет в этом запуске'}. Неизвестные доставки не переотправляются вслепую.`)
+  const h4Enabled = Object.values(h4Store?.all() || {}).filter(s => s.enabled)
+  const h4Bad = Object.values(h4States).some(s => ['unavailable','unconfigured'].includes(s.status))
+  monitor.sample('h4', 'H4-напоминания', !h4Store ? 'error' : !h4Enabled.length ? 'idle' : !h4Source.configured || taskErrors.h4 || h4Bad ? 'error' : Object.keys(h4States).length ? 'ok' : 'unknown',
+    `Активных настроек: ${h4Enabled.length}; OANDA: ${h4Source.configured ? 'настроен' : 'не настроен'}; ${Object.entries(h4States).map(([s,v]) => `${s}: ${v.status}`).join(', ') || 'запросы свечей ещё не требовались'}. Ошибка прохода: ${taskErrors.h4 ? 'да' : 'нет'}.`)
+  const reminders = liveStore?.all() || [], outcomes = reminders.flatMap(r => r.deliveries).filter(d => ['failed','unknown','missed'].includes(d.status) && now - (d.at || 0) < 86400000)
+  monitor.sample('live', 'Live-напоминания', !liveStore || taskErrors.live ? 'error' : outcomes.length ? 'warn' : reminders.some(r => r.enabled) ? 'ok' : 'idle',
+    `Напоминаний: ${reminders.length}; failed/unknown/missed за 24 ч: ${outcomes.length}; ошибка прохода: ${taskErrors.live ? 'да' : 'нет'}.`)
+  if (!AUTH_API_URL) monitor.sample('access', 'Access', REQUIRE_ACCESS ? 'warn' : 'idle', 'AUTH_API_URL не задан; доступность Access не проверена.')
+  else if (now >= accessNext) {
+    accessNext = now + 300000
+    try {
+      const url = new URL('/health', AUTH_API_URL)
+      const r = await fetch(url, { signal: AbortSignal.timeout(5000), redirect: 'manual' })
+      const d = await r.json()
+      monitor.sample('access', 'Access', r.ok && d.ok === true ? 'ok' : 'error', r.ok && d.ok === true ? 'Health доступен. Это не проверка входа, паролей или погашения кода.' : `Health не прошёл проверку (HTTP ${r.status}).`)
+    } catch (e) { if (e.retrySafe) { accessNext = 0; throw e }; monitor.sample('access', 'Access', 'error', 'Health недоступен или вернул некорректный ответ; тайм-аут 5 с.') }
+  }
+  await monitor.flush()
+}
+async function showStatus(section = 'summary') {
+  await refreshDiagnostics()
+  return { text: monitor.render(section), reply_markup: statusKeyboard() }
+}
+
 async function handleCallback(q) {
   const uid = String(q.from.id), data = q.data || ''
   const chat = q.message && q.message.chat.id, mid = q.message && q.message.message_id
   const ans = (text) => tg('answerCallbackQuery', { callback_query_id: q.id, text })
   const edit = (text, markup) => (chat ? tg('editMessageText', { chat_id: chat, message_id: mid, text, reply_markup: markup || { inline_keyboard: [] } }) : null)
   let m
+  if ((m = data.match(/^status:(summary|all|quotes|news|delivery|h4|live|scheduler|access|logs)$/))) {
+    if (!monitorAdmin || uid !== monitorAdmin || String(chat) !== monitorAdmin || q.message?.chat.type !== 'private') return ans('Admin only')
+    await ans()
+    // Send a fresh report: avoids Telegram's message-not-modified errors on repeated clicks.
+    return tg('sendMessage', { chat_id: chat, ...await showStatus(m[1]) })
+  }
   if ((m = data.match(/^del:(\d+)$/))) {
     const before = db.alerts.length
     db.alerts = db.alerts.filter((a) => !(a.id === Number(m[1]) && a.userId === uid))
@@ -401,6 +473,11 @@ async function handleUpdate(u) {
   const m = u.message
   if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
   const uid = String(m.from.id), txt = m.text.trim()
+  const statusCommand = txt.match(/^\/status(?:@\w+)?(?:\s+(all|quotes|news|delivery|h4|live|scheduler|access|logs))?$/i)
+  if (statusCommand) {
+    if (!monitorAdmin || uid !== monitorAdmin || String(m.chat.id) !== monitorAdmin) return
+    return tg('sendMessage', { chat_id: monitorAdmin, ...await showStatus((statusCommand[1] || 'summary').toLowerCase()) })
+  }
   if (uid === ADMIN_CHAT_ID) {
     if (/^\/reset_quotes(@\w+)?(\s+confirm)?$/i.test(txt)) {
       if (!/confirm$/i.test(txt)) {
@@ -597,7 +674,24 @@ return {
     await handleHttp(req, res)
     return result || Response.json({ error: 'not_found' }, { status: 404 })
   },
-  async update(update) { await handleUpdate(update) },
+  async update(update) {
+    await handleUpdate(update)
+    if (monitor.snapshot().parts.requests) monitor.sample('requests', 'Обработчик запросов', 'ok', 'Telegram update обработан успешно.')
+  },
+  async watchdog() {
+    if (!monitorAdmin || env.MONITOR_ALERTS === 'false') return
+    const state = monitor.snapshot(), last = state.housekeepingAt || state.startedAt
+    if (state.schedulerFailed || Date.now() - last > 120000) {
+      monitor.sample('scheduler', 'Фоновые задачи', 'error', 'Recovery cron: успешного фонового прохода нет более 2 минут либо зафиксирован сбой. Проверяется восстановление.')
+      await monitor.notify()
+    }
+  },
+  async reportFailure(component = 'scheduler') {
+    if (!monitorAdmin || env.MONITOR_ALERTS === 'false') return
+    if (component === 'scheduler') monitor.progress(0)
+    monitor.sample(component, component === 'scheduler' ? 'Фоновые задачи' : 'Обработчик запросов', 'error', 'Внутренняя ошибка обработки. Выполняется восстановление; payload и секреты не включены.')
+    await monitor.notify()
+  },
   async probe() { return quoteFeed.probe() },
   feedStatus() { return quoteFeed.status() },
   async stream(signal, dispatch) { return quoteFeed.stream(onTick, signal, dispatch) },
@@ -612,10 +706,16 @@ return {
       }
       await deliverEvent(event)
     }
-    await checkLive()
-    await checkH4()
-    await checkNews()
+    taskErrors.live = false; taskErrors.h4 = false; taskErrors.news = false
+    // A failing subsystem must not prevent checks of the others.
+    for (const [key, fn] of [['live', checkLive], ['h4', checkH4], ['news', checkNews]]) {
+      try { await fn() }
+      catch (e) { if (e.storageFailure || e.retrySafe) throw e; if (key in taskErrors) taskErrors[key] = true; monitor.sample(key, key.toUpperCase(), 'error', 'Ошибка фоновой обработки; подробности исключения скрыты.') }
+    }
+    lastHousekeeping = Date.now()
+    monitor.progress(lastHousekeeping)
     await watchFeed()
+    if (monitorAdmin && env.MONITOR_ALERTS !== 'false') { await refreshDiagnostics(); await monitor.notify() }
   },
   async inspect() { const h4 = await getH4Store(), live = await getLiveStore(); if (!h4 || !live) throw new Error('reminder_storage_unavailable'); return { alerts: db.alerts.length, activeAlerts: db.alerts.filter(a=>a.status==='active').length, purchases: Object.keys(db.owned).length, h4Users: Object.keys(h4.all()).length, liveReminders: live.all().length } },
 }

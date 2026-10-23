@@ -6,7 +6,7 @@
     "start": "node server.js",
     "check": "node check.js",
     "test": "node --test test/*.test.js",
-    "test:cloudflare": "wrangler deploy --dry-run --outdir .cf-test && node --test test/cloudflare.test.mjs test/delivery-regressions.test.mjs test/quotes-regressions.test.mjs",
+    "test:cloudflare": "wrangler deploy --dry-run --outdir .cf-test && node --test test/cloudflare.test.mjs test/delivery-regressions.test.mjs test/quotes-regressions.test.mjs test/monitor.test.mjs",
     "deploy:cloudflare": "wrangler deploy"
   },
   "dependencies": {

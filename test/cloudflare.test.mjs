@@ -14,7 +14,7 @@ import {createEngine} from '../cloudflare/core.mjs'
 
 // No real credentials or live network. All API responses and identities are artificial.
 const SECRET='artificial-signing-secret-01234567890123456789',WEBHOOK='artificial-webhook-secret-01234567890123456789',BOT='123456:artificial-token',uid='12345'
-const env={BOT_TOKEN:BOT,ACCESS_SIGNING_SECRET:SECRET,TELEGRAM_WEBHOOK_SECRET:WEBHOOK,OANDA_TOKEN:'artificial-oanda',OANDA_ACCOUNT:'test-account',PRICE_SOURCE:'oanda',OANDA_ENV:'practice',OANDA_SIDE:'bid',REQUIRE_ACCESS:'true',WEBAPP_URL:'https://alerts.test',AUTH_API_URL:'https://access.test',STREAM_WINDOW_SECONDS:'2'}
+const env={ADMIN_CHAT_ID:'99999',MONITOR_ALERTS:'false',BOT_TOKEN:BOT,ACCESS_SIGNING_SECRET:SECRET,TELEGRAM_WEBHOOK_SECRET:WEBHOOK,OANDA_TOKEN:'artificial-oanda',OANDA_ACCOUNT:'test-account',PRICE_SOURCE:'oanda',OANDA_ENV:'practice',OANDA_SIDE:'bid',REQUIRE_ACCESS:'true',WEBAPP_URL:'https://alerts.test',AUTH_API_URL:'https://access.test',STREAM_WINDOW_SECONDS:'2'}
 const initial=()=>({...emptyMain(),alerts:[{id:1,userId:uid,symbol:'EURUSD',dir:'above',level:9,status:'active',createdAt:1}],seq:30,owned:{[uid]:['XAUUSD','XAGUSD','GER40','DXY']},orders:{old:{status:'approved',userId:uid}},migrationMarker:'preserve',resetV2:true})
 const sign=(user=uid,project='alerts',extra={})=>{const b=Buffer.from(JSON.stringify({sub:user,project,exp:Date.now()+600000,...extra})).toString('base64url');return b+'.'+createHmac('sha256',SECRET).update(b).digest('hex')}
 let mf,sql,telegram=[],botName='artificial_alerts_bot',rejectStream=false,rejectTelegram=false,stale=false,closed=false,capitalCalls=0,candles=[],news=[],accessToken=null,streamStarts=0
@@ -132,6 +132,16 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   for(let i=0;i<2;i++)assert.equal((await request('/telegram/webhook',update,{'x-telegram-bot-api-secret-token':WEBHOOK})).status,200)
   assert.equal(telegram.filter(x=>x.method==='sendMessage').length,before+1)
   assert.ok(telegram.some(x=>x.payload?.reply_markup?.keyboard?.[0]?.[0]?.web_app?.url==='https://alerts.test'))
+ })
+ test('founder status and drilldown work through authenticated webhook, not for other users',async()=>{
+  const webhook=(id,user,text)=>request('/telegram/webhook',{update_id:id,message:{chat:{id:Number(user),type:'private'},from:{id:Number(user)},text}},{'x-telegram-bot-api-secret-token':WEBHOOK})
+  let before=telegram.length
+  assert.equal((await webhook(110,'12345','/status')).status,200);assert.equal(telegram.length,before)
+  assert.equal((await webhook(111,'99999','/status quotes')).status,200)
+  assert.match(telegram.at(-1).payload.text,/DXY/);assert.equal(telegram.at(-1).payload.chat_id,'99999')
+  const callback={update_id:112,callback_query:{id:'status-detail',from:{id:99999},data:'status:logs',message:{chat:{id:99999,type:'private'},message_id:1}}}
+  assert.equal((await request('/telegram/webhook',callback,{'x-telegram-bot-api-secret-token':WEBHOOK})).status,200)
+  assert.match(telegram.at(-1).payload.text,/Последние инциденты/)
  })
  test('Access redemption and bounded bodies; existing H4/Live routes remain separate',async()=>{
   assert.equal((await request('/api/access/redeem',{code:'123456'})).status,200)

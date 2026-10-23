@@ -20,16 +20,19 @@ async function fetchJson(url) {
       signal: AbortSignal.timeout(5000),
     })
   } catch (e) {
+    if (e.retrySafe || e.storageFailure) throw e
     throw new Error(`${e.message}${e.cause && e.cause.code ? ' ' + e.cause.code : ''} (${url})`)
   }
   if (!r.ok) throw new Error(`HTTP ${r.status} (${url})`)
-  return r.json()
+  const raw = await r.json()
+  if (!Array.isArray(raw) || raw.some(x => !x || typeof x.title !== 'string' || !x.title.trim() || typeof x.country !== 'string' || !x.country.trim() || typeof x.impact !== 'string' || !Number.isFinite(Date.parse(x.date)))) throw new Error('invalid_calendar_schema')
+  return raw
 }
 
 async function fetchWeek(week) {
   const errors = []
   for (const h of HOSTS) {
-    try { return await fetchJson(h.replace('thisweek', week)) } catch (e) { errors.push(e.message) }
+    try { return await fetchJson(h.replace('thisweek', week)) } catch (e) { if (e.retrySafe || e.storageFailure) throw e; errors.push(e.message) }
   }
   throw new Error(errors.join(' | '))
 }
@@ -42,14 +45,14 @@ async function loadRaw() {
       const j = await fetchJson(mirror)
       if (Array.isArray(j) && j.length) return { raw: j, via: 'зеркало' }
       errors.push('зеркало пустое')
-    } catch (e) { errors.push('зеркало: ' + e.message) }
+    } catch (e) { if (e.retrySafe || e.storageFailure) throw e; errors.push('зеркало: ' + e.message) }
   }
   try {
     const thisWeek = await fetchWeek('thisweek')
     let nextWeek = []
-    try { const n = await fetchWeek('nextweek'); if (Array.isArray(n)) nextWeek = n } catch {}
+    try { const n = await fetchWeek('nextweek'); if (Array.isArray(n)) nextWeek = n } catch (e) { if (e.retrySafe || e.storageFailure) throw e }
     return { raw: [...thisWeek, ...nextWeek], via: 'прямой источник' }
-  } catch (e) { errors.push('прямой: ' + e.message) }
+  } catch (e) { if (e.retrySafe || e.storageFailure) throw e; errors.push('прямой: ' + e.message) }
   throw new Error(errors.join(' || '))
 }
 
@@ -81,7 +84,7 @@ async function getNews() {
         cache.ts = saved.ts || 0
         console.log(`[news] из базы: ${cache.items.length}`)
       }
-    } catch {}
+    } catch (e) { if (e.storageFailure) throw e }
   }
   if (cache.ts && now - cache.ts < TTL) return cache.items
   if (cache.failedAt && now - cache.failedAt < Math.min(RETRY_MIN * 2 ** (cache.fails - 1), RETRY_MAX)) return cache.items
@@ -92,10 +95,11 @@ async function getNews() {
     console.log(`[news] загружено красных новостей: ${items.length} (${via})`)
     await redis(['SET', NEWS_KEY, JSON.stringify({ ts: now, items })])
   } catch (e) {
+    if (e.retrySafe || e.storageFailure) throw e
     cache.failedAt = now
     cache.fails = Math.min((cache.fails || 0) + 1, 6)
     const wait = Math.round(Math.min(RETRY_MIN * 2 ** (cache.fails - 1), RETRY_MAX) / 60e3)
-    console.error('[news]', e.message, `— повтор через ${wait} мин`)
+    console.error('[news] calendar unavailable; upstream details omitted;', `повтор через ${wait} мин`)
   }
   return cache.items
 }
@@ -113,5 +117,5 @@ function mockNews() {
   ]
 }
 
-return { getNews, parseNews }
+return { getNews, parseNews, status: () => ({ mock: env.NEWS_SOURCE === 'mock', loaded: cache.loaded, lastSuccess: cache.ts, failedAt: cache.failedAt, fails: cache.fails, items: cache.items.length, upcoming: cache.items.filter(n => n.time > Date.now()).length }) }
 }

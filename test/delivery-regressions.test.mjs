@@ -13,7 +13,7 @@ function fixture(main, now) {
   store.initialize({ main: { ...emptyMain(), ...main } })
   let response = 'ok', retry = 5, failMethod = '', articles = []
   const calls = []
-  const env = { LOCAL_STORE: store, BOT_TOKEN: 'artificial-token', ADMIN_CHAT_ID: admin, PRICE_SOURCE: 'mock', FETCH: async (input, options) => {
+  const env = { LOCAL_STORE: store, BOT_TOKEN: 'artificial-token', ADMIN_CHAT_ID: admin, MONITOR_ALERTS: 'false', PRICE_SOURCE: 'mock', FETCH: async (input, options) => {
     const url = new URL(input)
     if (url.hostname === 'api.telegram.org') {
       const method = url.pathname.split('/').at(-1), payload = JSON.parse(options.body)

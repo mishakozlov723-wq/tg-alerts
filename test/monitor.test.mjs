@@ -8,25 +8,45 @@ import { createNews } from '../cloudflare/news.mjs'
 import { createEngine } from '../cloudflare/core.mjs'
 import { createLocalStore, emptyMain } from '../cloudflare/storage.mjs'
 
-test('incidents persist, coalesce, recover and do not expose upstream secrets', async () => {
-  const data = new Map(), sent = []; let now = 1000000
+test('incidents persist without immediate pushes; reports run every 48 hours at 08:20 Moscow', async () => {
+  const data = new Map(), sent = []; let now = Date.parse('2026-10-30T04:00:00Z')
   const options = { store: async ([op,k,v]) => op === 'GET' ? data.get(k) || null : data.set(k,v), clock: () => now, send: async text => sent.push(text) }
   let monitor = await createMonitor(options)
-  monitor.sample('news','Новости','ok','Загружено'); await monitor.notify(); assert.equal(sent.length,0)
-  monitor.sample('news','Новости','error','Источник недоступен'); await monitor.notify(); assert.equal(sent.length,1)
+  const due = monitor.snapshot().nextReportAt
+  assert.equal(due, Date.parse('2026-10-30T05:20:00Z'))
+  monitor.sample('news','Новости','ok','Загружено'); await monitor.notify()
+  monitor.sample('news','Новости','error','Источник недоступен'); await monitor.notify()
+  now += 300001; await monitor.notify(); assert.equal(sent.length,0)
   monitor = await createMonitor(options)
-  monitor.sample('news','Новости','error','Источник недоступен'); await monitor.notify(); assert.equal(sent.length,1)
-  now += 300001
-  monitor.sample('news','Новости','ok','Источник восстановлен'); await monitor.notify(); assert.equal(sent.length,2)
-  assert.match(sent[1],/✅/); assert.equal(monitor.snapshot().incidents.length,2)
+  assert.equal(monitor.snapshot().nextReportAt,due)
+  monitor.sample('news','Новости','ok','Источник восстановлен')
   assert.match(monitor.render('logs'),/Источник недоступен/)
-  assert.match(monitor.render(),/в норме/)
+  now = due - 1; await monitor.notify(); assert.equal(sent.length,0)
+  now = due; await monitor.notify(); assert.equal(sent.length,1)
+  assert.match(sent[0],/08:20 МСК/); assert.match(sent[0],/Источник восстановлен/)
+  assert.equal(monitor.snapshot().nextReportAt,Date.parse('2026-11-01T05:20:00Z'))
+  monitor = await createMonitor(options); await monitor.notify(); assert.equal(sent.length,1)
+  now = due + 86400000; await monitor.notify(); assert.equal(sent.length,1)
+  now = due + 2*86400000; await monitor.notify(); assert.equal(sent.length,2)
+  assert.equal(monitor.snapshot().incidents.length,2)
+})
+test('schedule starts at the next morning after 08:20 and migrates old pending incidents silently', async () => {
+  const now=Date.parse('2026-10-30T06:00:00Z'), sent=[], data=new Map([['tg-alerts:monitor:v1',JSON.stringify({version:1,parts:{},incidents:[],notices:[{pending:true,key:'news',level:'error',detail:'old'}]})]])
+  const m=await createMonitor({store:async([op,k,v])=>op==='GET'?data.get(k):data.set(k,v),clock:()=>now,send:async t=>sent.push(t)})
+  await m.notify();assert.equal(sent.length,0);assert.deepEqual(m.snapshot().notices,[])
+  assert.equal(m.snapshot().nextReportAt,Date.parse('2026-10-31T05:20:00Z'))
+})
+test('missed report slots send one current report without a backlog', async () => {
+  const data=new Map(),sent=[];let now=Date.parse('2026-10-30T04:00:00Z')
+  const m=await createMonitor({store:async([op,k,v])=>op==='GET'?data.get(k):data.set(k,v),clock:()=>now,send:async t=>sent.push(t)})
+  now=Date.parse('2026-11-05T06:00:00Z');await m.notify();await m.notify()
+  assert.equal(sent.length,1);assert.equal(m.snapshot().nextReportAt,Date.parse('2026-11-07T05:20:00Z'))
 })
 for (const safe of [false,true]) test(`monitor notification failure: retrySafe=${safe}`, async () => {
   const data = new Map(); let now = 1000000, calls = 0
   const options = { store: async ([op,k,v]) => op === 'GET' ? data.get(k) || null : data.set(k,v), clock: () => now,
     send: async () => { calls++; throw Object.assign(new Error('artificial'), { retrySafe: safe, retryAfterMs: 10000 }) } }
-  let m = await createMonitor(options); m.sample('x','X','error','Ошибка'); await m.notify()
+  let m = await createMonitor(options); m.sample('x','X','error','Ошибка'); now=m.snapshot().nextReportAt; await m.notify()
   m = await createMonitor(options); await m.notify(); assert.equal(calls,1)
   now += 300001; await m.notify(); assert.equal(calls,safe ? 2 : 1)
 })
@@ -77,6 +97,8 @@ test('housekeeping reports source failures, preserves diagnostics across restart
     const restarted=await createEngine(f.env); await restarted.housekeeping()
     state=JSON.parse(await f.store.command(['GET','tg-alerts:monitor:v1']))
     assert.equal(state.parts.news.level,'error');assert.equal(state.parts.access.level,'error')
+    assert.equal(f.calls.filter(c=>c.method==='sendMessage').length,0)
+    await restarted.update(f.update(99999,'/status all'))
     const messages=f.calls.filter(c=>c.method==='sendMessage').map(c=>c.payload.text)
     assert.ok(messages.some(t=>t.includes('Новости')&&t.includes('ошибок подряд: 1')))
     assert.ok(!messages.join('').includes('private-secret-should-not-leak'))
@@ -84,15 +106,14 @@ test('housekeeping reports source failures, preserves diagnostics across restart
     assert.equal(f.calls.filter(c=>c.method==='sendMessage').length,count)
   } finally {f.db.close()}
 })
-test('flapping sends only current state and retains an unsent outage in recovery', async () => {
+test('flapping incidents remain in the manual journal without unscheduled messages', async () => {
   const data = new Map(), sent = []; let now = 1000000
   const m = await createMonitor({ store: async ([op,k,v]) => op === 'GET' ? data.get(k) : data.set(k,v), clock:()=>now, send:async t=>sent.push(t) })
   m.sample('x','X','error','Первый сбой'); await m.notify()
   m.sample('x','X','ok','Восстановлено'); await m.notify()
-  m.sample('x','X','error','Новый сбой'); await m.notify()
-  now+=300001; await m.notify(); assert.match(sent.at(-1),/Новый сбой/); assert.doesNotMatch(sent.at(-1),/Восстановлено/)
-  m.sample('y','Y','error','Пропущенный сбой'); m.sample('y','Y','ok','Работает'); await m.notify()
-  assert.match(sent.at(-1),/Предшествующий сбой: Пропущенный сбой/)
+  m.sample('x','X','error','Новый сбой'); now+=300001; await m.notify()
+  assert.equal(sent.length,0);assert.match(m.render('logs'),/Первый сбой/);assert.match(m.render('logs'),/Восстановлено/)
+  now=m.snapshot().nextReportAt;await m.notify();assert.equal(sent.length,1);assert.match(sent[0],/Новый сбой/)
 })
 test('status does not refresh background progress; watchdog survives restart', async () => {
   const f=fixture(), realNow=Date.now; let now=realNow(); Date.now=()=>now
@@ -101,8 +122,8 @@ test('status does not refresh background progress; watchdog survives restart', a
     now+=130000; await e.update(f.update(99999,'/status'))
     let state=JSON.parse(await f.store.command(['GET','tg-alerts:monitor:v1']))
     assert.equal(state.parts.scheduler.level,'error'); assert.ok(state.housekeepingAt<now-120000)
-    e=await createEngine(f.env); await e.watchdog()
-    assert.ok(f.calls.some(c=>c.payload.text?.includes('[Alerts] Фоновые задачи')))
+    f.calls.length=0; e=await createEngine(f.env); await e.watchdog()
+    assert.equal(f.calls.filter(c=>c.method==='sendMessage').length,0)
     state=JSON.parse(await f.store.command(['GET','tg-alerts:monitor:v1']))
     assert.equal(state.parts.scheduler.level,'error'); assert.ok(state.housekeepingAt<now-120000)
     await e.housekeeping();state=JSON.parse(await f.store.command(['GET','tg-alerts:monitor:v1']))
@@ -145,7 +166,13 @@ test('recovery consumes persisted window fault only after reporting it',async()=
   await assert.rejects(sandbox.handle.call(obj,new Request('https://internal/internal/recover')))
   assert.equal(data.get('monitorSchedulerFailure'),true)
 })
-test('unexpected scheduler failure is recorded and sent without exception payload',async()=>{
+test('unexpected scheduler failure is recorded without an immediate push',async()=>{
   const f=fixture()
-  try {const engine=await createEngine(f.env);await engine.reportFailure();assert.match(f.calls.at(-1).payload.text,/Фоновые задачи/);await engine.reportFailure();assert.equal(f.calls.length,1)}finally{f.db.close()}
+  try {
+    const engine=await createEngine(f.env);await engine.reportFailure();await engine.reportFailure()
+    assert.equal(f.calls.length,0)
+    const state=JSON.parse(await f.store.command(['GET','tg-alerts:monitor:v1']))
+    assert.equal(state.parts.scheduler.level,'error');assert.equal(state.schedulerFailed,true)
+    assert.match(state.parts.scheduler.detail,/Внутренняя ошибка/)
+  }finally{f.db.close()}
 })

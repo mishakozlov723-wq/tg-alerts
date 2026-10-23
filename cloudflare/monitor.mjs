@@ -1,14 +1,27 @@
 // Operational metadata only: never store upstream messages, tokens or user content.
 const KEY = 'tg-alerts:monitor:v1'
+const DAY_MS = 86400000
+const REPORT_INTERVAL_MS = 2 * DAY_MS
+// Europe/Moscow is UTC+03:00: 08:20 local = 05:20 UTC.
+function firstReportAt(now) {
+  const today = Math.floor(now / DAY_MS) * DAY_MS + (5 * 60 + 20) * 60000
+  return today >= now ? today : today + DAY_MS
+}
 export const ICON = { ok: '✅', warn: '⚠️', error: '🔴', idle: '➖', unknown: '❔' }
 export async function createMonitor({ store, send, clock = Date.now }) {
   let state
   try { state = JSON.parse(await store(['GET', KEY]) || 'null') } catch (e) { if (e.storageFailure) throw e }
   if (!state || state.version !== 1) state = { version: 1, parts: {}, incidents: [], notices: {}, checkedAt: 0 }
-  if (!Array.isArray(state.notices)) state.notices = Object.values(state.notices || {})
-  state.lastNotice ||= {}
+  // Clear legacy incident pushes; retain incidents for manual diagnostics.
+  state.notices = []
+  state.lastNotice = {}
+  if (state.reportScheduleVersion !== 1 || !Number.isFinite(state.nextReportAt)) {
+    state.reportScheduleVersion = 1
+    state.nextReportAt = firstReportAt(clock())
+    state.reportRetryAt = 0
+  }
   state.startedAt ||= clock()
-  let dirty = true, savedAt = 0
+  let dirty = true, savedAt = 0, notifying = false
   function progress(at = clock()) { state.housekeepingAt = at; state.schedulerFailed = !at; dirty = true }
   async function flush(force = false) {
     if (!dirty || !force && clock() - savedAt < 60000) return
@@ -25,30 +38,43 @@ export async function createMonitor({ store, send, clock = Date.now }) {
     if (bad || recovered) {
       const incident = { at: now, key, label, level, detail }
       state.incidents.push(incident); state.incidents = state.incidents.slice(-50)
-      // Keep the latest transition per component, not stale recovery messages.
-      // If an unsent outage already recovered, retain its context in the notice.
-      const unsent = state.notices.find(n => n.key === key && n.pending && ['warn', 'error'].includes(n.level))
-      state.notices = state.notices.filter(n => n.key !== key)
-      state.notices.push({ ...incident, detail: !bad && unsent ? `${detail}\nПредшествующий сбой: ${unsent.detail}` : detail, pending: true, attemptedAt: 0 })
-      // Bound operational history even during prolonged Telegram outages.
-      state.notices = state.notices.filter(n => n.pending).slice(-50)
+
     }
     return true
   }
   async function notify() {
-    await flush(Object.values(state.notices).some(n => n.pending)) // Commit transitions before Telegram; ordinary samples checkpoint at most once/minute.
-    for (const notice of Object.values(state.notices)) {
-      if (!notice.pending || notice.attemptedAt && clock() - notice.attemptedAt < 300000) continue
-      const last = state.lastNotice[notice.key] || 0
-      if (last && clock() - last < 300000) continue
-      notice.pending = false; notice.attemptedAt = clock(); state.lastNotice[notice.key] = clock(); dirty = true
-      await flush(true) // Ambiguous outcomes must not create a send storm after restart.
-      try { await send(`${ICON[notice.level]} [Alerts] ${notice.label}\n${notice.detail}\n/status — диагностика`) }
-      catch (e) {
-        // Retry only when the request definitely did not reach Telegram or was rejected temporarily.
-        if (e.retrySafe) { notice.pending = true; notice.attemptedAt = clock() + Math.max(0, (e.retryAfterMs || 0) - 300000); dirty = true; await flush(true) }
+    if (notifying) return
+    notifying = true
+    try {
+      const now = clock()
+      if (now < state.nextReportAt || now < (state.reportRetryAt || 0)) {
+        await flush()
+        return
       }
-    }
+      const scheduledAt = state.nextReportAt
+      // Reserve before Telegram: ambiguous outcomes/restarts must not cause
+      // duplicate reports. Skip missed slots, retaining the Moscow 08:20 phase.
+      state.nextReportAt = scheduledAt + (Math.floor((now - scheduledAt) / REPORT_INTERVAL_MS) + 1) * REPORT_INTERVAL_MS
+      state.reportRetryAt = 0
+      state.lastReportAttemptAt = now
+      dirty = true
+      await flush(true)
+      try {
+        await send(('🕗 Плановая сводка Alerts · раз в 2 дня, 08:20 МСК\n\n' + render('all')).slice(0, 4000))
+        state.lastReportSentAt = clock(); dirty = true
+        await flush(true)
+      } catch (e) {
+        if (e.storageFailure) throw e
+        // Retry only a definite rejection of an unsent report, never an
+        // incident push. An ambiguous result waits until the next report slot.
+        if (e.retrySafe) {
+          state.nextReportAt = scheduledAt
+          state.reportRetryAt = clock() + Math.max(300000, Number(e.retryAfterMs) || 0)
+          dirty = true
+          await flush(true)
+        }
+      }
+    } finally { notifying = false }
   }
   function render(section = 'summary') {
     const parts = Object.entries(state.parts), bad = parts.some(([,p]) => ['warn','error'].includes(p.level))

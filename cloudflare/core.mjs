@@ -47,7 +47,7 @@ const save = async () => {
 const monitorAdmin = /^\d+$/.test(String(env.ADMIN_CHAT_ID || '')) ? String(env.ADMIN_CHAT_ID) : ''
 const monitor = await createMonitor({ store: redis, send: text => {
   if (!monitorAdmin || !BOT_TOKEN) throw new Error('monitor_recipient_unconfigured')
-  return tg('sendMessage', { chat_id: monitorAdmin, text }, 10000)
+  return tg('sendMessage', { chat_id: monitorAdmin, text, reply_markup: statusKeyboard() }, 10000)
 } })
 const taskErrors = { h4: false, live: false, news: false }
 let lastHousekeeping = monitor.snapshot().housekeepingAt || 0, accessNext = 0

@@ -191,14 +191,13 @@ async function handle(req,env){
   if((p==='/'||p==='/index.html')&&asset.ok&&req.method!=='HEAD'){
     headers.delete('content-length');headers.delete('content-encoding');headers.delete('etag');headers.delete('last-modified')
     let html=await asset.text()
-    html=html.replace("renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)","cfg = await api('/api/config'); renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)")
+    // Authenticated configuration is loaded by bootstrap, not during rendering.
     html=html.replace('if (shown[k] == null) continue','if (shown[k] == null || !cfg.symbols[k]) continue')
     html=html.replace("fetch(authApi.replace(/\\/$/, '') + '/api/verify-code'", "fetch('/api/access/redeem'")
     html=html.replace("catch { status.textContent = 'Invalid or already used code.' }", "catch (e) { const messages = { access_signing_secret_mismatch: 'Ошибка настройки: ACCESS_SIGNING_SECRET в Alerts не совпадает с Access. Этот код уже погашен; после исправления получите новый.', too_many_attempts: 'Слишком много попыток. Подождите 15 минут и получите новый код.', invalid_or_expired_code: 'Код истёк или уже использован. Получите новый код Alerts в Access.', invalid_code: 'Введите шестизначный код Alerts.', configuration_incomplete: 'В Alerts не заполнены обязательные настройки.', access_connection_failed: 'Нет связи между Alerts и Access. Сообщите об этой ошибке.', access_unexpected_response: 'Cloudflare вернул неожиданный ответ вместо Access. Сообщите об этой ошибке.', service_unavailable: 'Access вернул внутреннюю ошибку. Сообщите об этой ошибке.' }; status.textContent = messages[e.message] || 'Не удалось выполнить вход. Проверьте соединение и адрес приложения. Если повторяется — сообщите об ошибке.' }")
     html=html.replace("setInterval(() => tick().catch(() => {}), 400)", "setInterval(() => {if (!document.hidden) tick().catch(() => {})}, 1000)")
     html=html.replace("sym + ' · live'", "sym + ' · streaming'")
-    html=html.replace('<div class="psub" id="psub">&nbsp;</div>', '<div class="psub" id="psub">&nbsp;</div><p style="font-size:11px;color:#aaa;margin:-24px 0 24px">OANDA streaming quotes. Display refreshes every second. Broker and Telegram delays still apply.</p>')
-    html=html.replace(/\/\/ smooth glide of displayed prices[\s\S]*?(?=async function tick\(\))/, `// Display actual snapshots only, never animated intermediate prices or stale quotes.
+    html=html.replace(/\/\/ smooth glide of displayed prices[\s\S]*?(?=const QUOTE_CACHE_KEY)/, `// Display actual snapshots only, never animated intermediate prices.
 function frame() {
   for (const k in shown) if (!cfg.symbols[k]) delete shown[k]
   for (const k in prices) if (cfg.symbols[k] && Number.isFinite(prices[k].price)) shown[k] = prices[k].price

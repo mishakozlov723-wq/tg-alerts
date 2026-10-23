@@ -6,7 +6,7 @@ import vm from 'node:vm'
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
 const script = html.match(/<script>\s*([\s\S]*?)<\/script>/)[1]
 
-function boot({ saved = null, valid = false, authApi = '/local-access', redeemedToken = null } = {}) {
+function boot({ saved = null, valid = false, authApi = '/local-access', redeemedToken = null, cached = null, pricesResponse = {}, eventsResponse = [], storageFails = false } = {}) {
   const elements = new Map()
   const element = (id) => {
     if (!elements.has(id)) {
@@ -21,6 +21,7 @@ function boot({ saved = null, valid = false, authApi = '/local-access', redeemed
     return elements.get(id)
   }
   const storage = new Map(saved ? [['retocker.access.alerts.v1', saved]] : [])
+  if (cached) storage.set('retocker.quotes.display.v1', cached)
   const timers = [], requests = [], listeners = new Map(), errors = []
   const window = {
     playIntro: () => new Promise(() => {}), // Intro never finishes: login must still be usable.
@@ -30,23 +31,66 @@ function boot({ saved = null, valid = false, authApi = '/local-access', redeemed
   const context = vm.createContext({
     window, Event, AbortSignal, console: { error: (e) => errors.push(e) }, performance: { now: () => 0 },
     document: { querySelector: (id) => id === '#splash' && element(id).removed ? null : element(id), querySelectorAll: () => [], getElementById: (id) => element('#' + id), addEventListener() {}, body: element('body') },
-    localStorage: { getItem: (k) => storage.get(k), setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) },
+    localStorage: { getItem: (k) => storage.get(k), setItem: (k, v) => { if (storageFails) throw new Error('quota'); storage.set(k, v) }, removeItem: (k) => storage.delete(k) },
     setTimeout: (fn, ms) => { timers.push({ fn, ms }) }, setInterval() {}, requestAnimationFrame() {}, cancelAnimationFrame() {},
     fetch: async (url) => {
       requests.push(url)
       const responses = {
         '/api/config': { authRequired: true, authApi, symbols: { EURUSD: { digits: 5, pip: .0001 } } },
-        '/api/access/check': { ok: valid }, '/api/prices': {}, '/api/events?since=0': [], '/api/settings': {},
+        '/api/access/check': { ok: valid }, '/api/prices': pricesResponse, '/api/events?since=0': eventsResponse, '/api/settings': {},
         '/local-access/api/verify-code': redeemedToken ? { token: redeemedToken } : { error: 'invalid_code' },
       }
       assert.ok(url in responses, 'Unexpected request: ' + url)
-      return { json: async () => responses[url] }
+      return { ok: true, json: async () => responses[url] }
     },
   })
   vm.runInContext(script, context)
-  return { element, storage, timers, requests, errors }
+  return { element, storage, timers, requests, errors, context }
 }
 const settle = () => new Promise((resolve) => setImmediate(resolve))
+const snapshot = JSON.stringify({ version: 1, mock: false, prices: {
+  EURUSD: { price: 1.12345, dataTs: 1000, observedAt: 1000 },
+  GOLD: { price: 2500, dataTs: 1000, observedAt: 1000 },
+} })
+
+test('cached prices render before blocked network/history; unentitled assets are excluded', async () => {
+  const app = boot({ saved: 'valid-test-token', valid: true, cached: snapshot,
+    pricesResponse: new Promise(() => {}), eventsResponse: new Promise(() => {}) })
+  await settle()
+  assert.equal(app.element('#price').textContent, '1.12345')
+  assert.equal(app.element('#splash').removed, true)
+  assert.equal(vm.runInContext('prices.EURUSD.stale', app.context), true)
+  assert.equal(vm.runInContext('prices.GOLD', app.context), undefined)
+  assert.ok(app.requests.includes('/api/events?since=0'))
+  assert.deepEqual(app.errors, [])
+})
+
+test('cache does not bypass expired access or expose prices before login', async () => {
+  const app = boot({ saved: 'expired-test-token', cached: snapshot })
+  await settle()
+  assert.equal(app.element('#price').textContent, '')
+  assert.equal(vm.runInContext('Object.keys(prices).length', app.context), 0)
+})
+
+test('fresh response replaces cached price and persists original timestamps without waiting for events', async () => {
+  const q = { price: 1.23456, dataTs: 2000, observedAt: 3000, stale: false, tradeable: true }
+  const app = boot({ saved: 'valid-test-token', valid: true, cached: snapshot,
+    pricesResponse: { EURUSD: q }, eventsResponse: new Promise(() => {}) })
+  await settle()
+  assert.deepEqual(JSON.parse(app.storage.get('retocker.quotes.display.v1')).prices.EURUSD, q)
+  assert.equal(vm.runInContext('prices.EURUSD.price', app.context), q.price)
+  assert.deepEqual(app.errors, [])
+})
+
+for (const cached of ['broken json', JSON.stringify({ version: 1, mock: true, prices: JSON.parse(snapshot).prices })]) {
+  test('invalid or incompatible cache is ignored and polling starts', async () => {
+    const app = boot({ saved: 'valid-test-token', valid: true, cached, storageFails: true })
+    await settle()
+    assert.equal(vm.runInContext('Object.keys(prices).length', app.context), 0)
+    assert.ok(app.requests.includes('/api/prices'))
+    assert.deepEqual(app.errors, [])
+  })
+}
 
 for (const saved of [null, 'expired-test-token']) {
   test(`code entry is available without advancing timers (${saved ? 'expired session' : 'no session'})`, async () => {

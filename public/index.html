@@ -444,6 +444,36 @@ function frame(now) {
   requestAnimationFrame(frame)
 }
 
+const QUOTE_CACHE_KEY = 'retocker.quotes.display.v1'
+function restoreQuotes() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(QUOTE_CACHE_KEY))
+    if (cached?.version !== 1 || cached.mock !== !!cfg.mock) return
+    for (const k of Object.keys(cfg.symbols)) {
+      const q = cached.prices?.[k]
+      if (Number.isFinite(q?.price) && q.price > 0 && Number.isFinite(q.dataTs) && Number.isFinite(q.observedAt)) {
+        prices[k] = { ...q, stale: true }; shown[k] = q.price
+      }
+    }
+  } catch {} // Storage may be disabled or contain a damaged snapshot.
+}
+function saveQuotes() {
+  try { localStorage.setItem(QUOTE_CACHE_KEY, JSON.stringify({ version: 1, mock: !!cfg.mock, prices })) } catch {}
+}
+let eventsBusy = false, eventsReady = false
+async function pollEvents() {
+  if (eventsBusy) return
+  eventsBusy = true
+  try {
+    const ev = await api('/api/events?since=' + lastEvent, { signal: AbortSignal.timeout(10000) })
+    if (!Array.isArray(ev)) return
+    for (const e of ev) {
+      lastEvent = Math.max(lastEvent, e.id)
+      if (eventsReady) { if (!tg?.initData) toast(e.text); if (!$('#p-alerts').classList.contains('hide')) loadAlerts().catch(() => {}) }
+    }
+    eventsReady = true
+  } finally { eventsBusy = false }
+}
 async function tick() {
   if (ticking) return
   ticking = true
@@ -455,8 +485,8 @@ async function tick() {
     // A partial response must not erase previously received assets.
     for (const k in snapshot) if (cfg.symbols[k] && Number.isFinite(snapshot[k]?.price)) prices[k] = snapshot[k]
     for (const k in prices) if (shown[k] == null) shown[k] = prices[k].price
-    const ev = await api('/api/events?since=' + lastEvent, { signal: AbortSignal.timeout(10000) })
-    if (Array.isArray(ev)) for (const e of ev) { lastEvent = Math.max(lastEvent, e.id); if (!tg?.initData) toast(e.text); if (!$('#p-alerts').classList.contains('hide')) loadAlerts() }
+    saveQuotes()
+    renderPrice()
   } finally { ticking = false }
 }
 let ticking = false
@@ -492,15 +522,17 @@ function showErr(e) {
 }
 
 ;(async () => { try {
-  cfg = await api('/api/config')
+  cfg = await api('/api/config', { signal: AbortSignal.timeout(10000) })
   if (cfg.authRequired && !(await ensureAccess(cfg.authApi))) { whenReady(); return }
-  // A temporary quote outage must not prevent starting the polling loop.
-  prices = await api('/api/prices', { signal: AbortSignal.timeout(10000) }).catch(() => ({}))
-  if (!prices || prices.error || Array.isArray(prices)) prices = {}
-  for (const k in prices) if (cfg.symbols[k] && Number.isFinite(prices[k]?.price)) shown[k] = prices[k].price
-  const old = await api('/api/events?since=0', { signal: AbortSignal.timeout(10000) }).catch(() => [])
-  lastEvent = Array.isArray(old) ? old.reduce((m, e) => Math.max(m, e.id), 0) : 0
+  // Refresh entitlements after code entry, before restoring any paid assets.
+  if (cfg.authRequired) cfg = await api('/api/config', { signal: AbortSignal.timeout(10000) })
+  restoreQuotes()
   renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)
+  if (Object.keys(prices).length) { reveal(); $('#splash')?.remove() }
+  // Neither a slow broker response nor notification history blocks the screen.
+  tick().catch(() => {})
+  pollEvents().catch(() => {})
+  setInterval(() => { if (!document.hidden) pollEvents().catch(() => {}) }, 1500)
   if (cfg.mock) {
     $('#dbg').classList.remove('hide')
     $('#dbg').querySelectorAll('button').forEach((b) => b.onclick = () => { api('/api/debug/move', { method: 'POST', body: JSON.stringify({ symbol: sym, pips: +b.dataset.p }) }); toast(`${sym} ${+b.dataset.p > 0 ? '+' : ''}${b.dataset.p} pips`) })

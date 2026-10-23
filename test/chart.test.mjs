@@ -15,7 +15,7 @@ function fixture() {
     const u=new URL(input);requests.push(u)
     if(broken) return Response.json({}, {status:503})
     const side={M:'mid',B:'bid',A:'ask'}[u.searchParams.get('price')]
-    return Response.json({instrument:'GBP_USD',granularity:u.searchParams.get('granularity'),candles:Array.from({length:Number(u.searchParams.get('count'))},(_,i)=>candle(i,side))})
+    return Response.json({instrument:u.pathname.split('/')[3],granularity:u.searchParams.get('granularity'),candles:Array.from({length:Number(u.searchParams.get('count'))},(_,i)=>candle(i,side))})
   }}
   return {env,store,data,requests,now:()=>time,advance:()=>{time+=61000},break:()=>{broken=true}}
 }
@@ -33,7 +33,7 @@ test('side mapping, fixed frames and no arbitrary instrument/provider access',as
   const r=await source.get(params('D1'));assert.equal(r.side,side);assert.equal(f.requests[0].searchParams.get('price'),component);assert.equal(f.requests[0].searchParams.get('granularity'),'D')
  }
  const f=fixture(),source=createCandles(f.env,f.store)
- await assert.rejects(source.get(new URLSearchParams('symbol=EURUSD')),/unsupported_chart/)
+ await assert.rejects(source.get(new URLSearchParams('symbol=DXY')),/unsupported_chart/)
  await assert.rejects(source.get(params('M1')),/unsupported_chart/)
  await assert.rejects(source.get(params('M15','&before=abc')),/invalid_cursor/);assert.equal(f.requests.length,0)
 })
@@ -43,6 +43,15 @@ test('single-flight deduplicates cold concurrent requests; restore respects sour
  const calls=Array.from({length:8},()=>s.get(params()));release();assert.ok((await Promise.all(calls)).every(x=>x.candles.length===300));assert.equal(f.requests.length,1)
  f.break();const restored=await createCandles(f.env,f.store).get(params());assert.equal(restored.stale,true)
  await assert.rejects(createCandles({...f.env,OANDA_SIDE:'ask'},f.store).get(params()),/candles_unavailable/)
+})
+test('EUR and GBP have isolated shared caches and provider instruments',async()=>{
+ const f=fixture(),source=createCandles(f.env,f.store,f.now)
+ const eur=new URLSearchParams('symbol=EURUSD&timeframe=M15')
+ await Promise.all([source.get(params()),source.get(eur),source.get(eur)])
+ assert.equal(f.requests.length,2)
+ assert.deepEqual(new Set(f.requests.map(u=>u.pathname)),new Set(['/v3/instruments/GBP_USD/candles','/v3/instruments/EUR_USD/candles']))
+ assert.equal(f.data.size,2)
+ f.break();assert.equal((await createCandles(f.env,f.store).get(eur)).stale,true)
 })
 test('invalid broker OHLC never accepted',()=>{
  assert.throws(()=>parseCandles([{...candle(1),mid:{o:'1.3',h:'1.2',l:'1.1',c:'1.3'}}],'mid'),/invalid_candles/)

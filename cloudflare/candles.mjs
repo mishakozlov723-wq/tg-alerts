@@ -1,4 +1,5 @@
 // One bounded, shared history per timeframe; never used to trigger alerts.
+export const CHART_SYMBOLS = { GBPUSD: 'GBP_USD', EURUSD: 'EUR_USD' }
 export const CHART_FRAMES = { M15: { seconds: 900, limit: 2000 }, H1: { seconds: 3600, limit: 2000 }, H4: { seconds: 14400, limit: 1500 }, D1: { seconds: 86400, limit: 1000 } }
 const fail = (message, status) => Object.assign(new Error(message), { status })
 export function parseCandles(rows, side) {
@@ -18,25 +19,28 @@ export function createCandles(env, store, now = Date.now) {
   const fetcher = env.FETCH || globalThis.fetch, slots = new Map()
   const side = env.OANDA_SIDE || 'bid', component = { bid: 'B', ask: 'A', mid: 'M' }[side]
   const identity = JSON.stringify([env.OANDA_ENV || 'practice', side, env.OANDA_ACCOUNT || ''])
-  async function slot(tf) {
-    if (!slots.has(tf)) slots.set(tf, (async () => {
+  async function slot(tf, symbol) {
+    const key = symbol + ':' + tf
+    // Preserve the existing GBP cache; EUR has a separate bounded snapshot.
+    const storageKey = 'tg-alerts:chart:v1:' + (symbol === 'GBPUSD' ? tf : key)
+    if (!slots.has(key)) slots.set(key, (async () => {
       let snapshot = null
       try {
-        const v = JSON.parse(await store(['GET', 'tg-alerts:chart:v1:' + tf]))
+        const v = JSON.parse(await store(['GET', storageKey]))
         if (v?.identity === identity && Array.isArray(v.candles) && v.candles.length <= CHART_FRAMES[tf].limit &&
           v.candles.every((c, i, a) => Number.isSafeInteger(c.time) && [c.open,c.high,c.low,c.close].every(n => Number.isFinite(n) && n > 0) && c.high >= Math.max(c.open,c.close) && c.low <= Math.min(c.open,c.close) && (!i || c.time > a[i-1].time)) && Number.isFinite(v.fetchedAt)) snapshot = v
       } catch (e) { if (e.storageFailure) throw e }
-      return { snapshot, next: 0, job: null, restored: !!snapshot }
-    })().catch(e => { slots.delete(tf); throw e }))
-    return slots.get(tf)
+      return { snapshot, storageKey, next: 0, job: null, restored: !!snapshot }
+    })().catch(e => { slots.delete(key); throw e }))
+    return slots.get(key)
   }
-  async function refresh(s, tf) {
+  async function refresh(s, tf, symbol) {
     s.next = now() + 60000 // Global retry backoff, including provider failures.
     if (!component || !env.OANDA_TOKEN) throw fail('chart_source_unconfigured', 503)
     const frame = CHART_FRAMES[tf], previous = s.snapshot
     const full = !previous || now() - previous.fetchedAt > frame.seconds * 7000
     const host = env.OANDA_ENV === 'live' ? 'https://api-fxtrade.oanda.com' : 'https://api-fxpractice.oanda.com'
-    const url = new URL('/v3/instruments/GBP_USD/candles', host)
+    const url = new URL('/v3/instruments/' + CHART_SYMBOLS[symbol] + '/candles', host)
     url.search = new URLSearchParams({ granularity: tf === 'D1' ? 'D' : tf, price: component,
       count: String(full ? frame.limit : 10), smooth: 'false', dailyAlignment: '17', alignmentTimezone: 'America/New_York' })
     let r, data
@@ -46,21 +50,21 @@ export function createCandles(env, store, now = Date.now) {
       if (!r.ok) throw new Error()
       data = await r.json()
     } catch { throw fail('candles_unavailable', 502) }
-    if (data.instrument !== 'GBP_USD' || data.granularity !== (tf === 'D1' ? 'D' : tf)) throw fail('invalid_candles', 502)
+    if (data.instrument !== CHART_SYMBOLS[symbol] || data.granularity !== (tf === 'D1' ? 'D' : tf)) throw fail('invalid_candles', 502)
     const incoming = parseCandles(data.candles, side)
     const merged = new Map((full ? [] : previous.candles).map(c => [c.time, c]))
     for (const c of incoming) merged.set(c.time, c)
     const snapshot = { identity, requestedAt, fetchedAt: now(), candles: [...merged.values()].sort((a,b) => a.time-b.time).slice(-frame.limit) }
-    await store(['SET', 'tg-alerts:chart:v1:' + tf, JSON.stringify(snapshot)])
+    await store(['SET', s.storageKey, JSON.stringify(snapshot)])
     s.snapshot = snapshot; s.restored = false
   }
   return { async get(params) {
     const tf = params.get('timeframe') || 'M15', symbol = params.get('symbol') || 'GBPUSD'
-    if (symbol !== 'GBPUSD' || !Object.hasOwn(CHART_FRAMES, tf)) throw fail('unsupported_chart', 400)
+    if (!Object.hasOwn(CHART_SYMBOLS, symbol) || !Object.hasOwn(CHART_FRAMES, tf)) throw fail('unsupported_chart', 400)
     const raw = params.get('before'), before = raw === null ? Infinity : Number(raw)
     if (raw !== null && (!/^\d+$/.test(raw) || !Number.isSafeInteger(before) || before <= 0)) throw fail('invalid_cursor', 400)
-    const s = await slot(tf)
-    if (!s.job && now() >= s.next) s.job = refresh(s, tf).then(() => { s.failed = false }, e => { s.failed = true; throw e }).finally(() => { s.job = null })
+    const s = await slot(tf, symbol)
+    if (!s.job && now() >= s.next) s.job = refresh(s, tf, symbol).then(() => { s.failed = false }, e => { s.failed = true; throw e }).finally(() => { s.job = null })
     if (s.job) {
       try { await s.job } catch (e) { if (e.storageFailure || !s.snapshot) throw e }
     }

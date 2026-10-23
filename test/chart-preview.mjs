@@ -13,7 +13,7 @@ const source=async input=>{
  const u=new URL(input)
  if(u.pathname.endsWith('/candles')){
   const tf=u.searchParams.get('granularity'),step={M15:900,H1:3600,H4:14400,D:86400}[tf],count=Number(u.searchParams.get('count')),end=Math.floor(Date.now()/1000/step)*step
-  return Response.json({instrument:'GBP_USD',granularity:tf,candles:Array.from({length:count},(_,i)=>{
+  return Response.json({instrument:u.pathname.split('/')[3],granularity:tf,candles:Array.from({length:count},(_,i)=>{
    const time=end-(count-1-i)*step,p=1.3+Math.sin(time/step/10)*.002
    return {time:new Date(time*1000).toISOString(),complete:i<count-1,mid:{o:String(p),h:String(p+.0008),l:String(p-.0006),c:String(p+.0002)}}
   })})

@@ -544,7 +544,7 @@ async function handleHttp(req, res) {
 
   if (p === '/api/chart/candles') {
     if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' })
-    if (!allowedSyms(uid).includes('GBPUSD')) return json(res, 403, { error: 'quote_access_required' })
+    if (!allowedSyms(uid).includes(url.searchParams.get('symbol') || 'GBPUSD')) return json(res, 403, { error: 'quote_access_required' })
     return json(res, 200, await chartCandles.get(url.searchParams))
   }
 

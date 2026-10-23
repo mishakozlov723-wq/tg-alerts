@@ -195,11 +195,18 @@ async function onTick(sym, price) {
     if (a.status !== 'active' || a.symbol !== sym) continue
     if (isPremium(sym) && !ownsQuote(a.userId, sym)) continue
     if (!quoteFeed.tradeable(sym)) continue
-    const hit = a.dir === 'above' ? price >= a.level : price <= a.level
+    // One-shot reach alerts retain their initial fresh baseline across restarts.
+    // No per-tick writes: before a hit every observed price stays on that side.
+    if (a.dir === 'reach' && !Number.isFinite(a.referencePrice)) {
+      a.referencePrice = price; changed = true
+    }
+    const hit = a.dir === 'reach'
+      ? Math.min(a.referencePrice, price) <= a.level && a.level <= Math.max(a.referencePrice, price)
+      : a.dir === 'above' ? price >= a.level : price <= a.level
     if (!hit) continue
     a.status = 'fired'; a.firedAt = Date.now(); a.firedPrice = price; changed = true
     const shownPrice = Number(price).toFixed(SYMBOLS[sym].digits)
-    await notify(a.userId, a.note ? `🔔 ${sym} · ${shownPrice}\n${a.note}` : `🔔 ${sym} ${a.dir} ${a.level} (price ${shownPrice})`)
+    await notify(a.userId, a.note ? `🔔 ${sym} · ${shownPrice}\n${a.note}` : `🔔 ${sym} ${a.dir === 'reach' ? 'reached' : a.dir} ${a.level} (price ${shownPrice})`)
   }
   if (changed) await save()
 }
@@ -298,7 +305,7 @@ async function adminNotify(text, key = text, minGapMs = 0) {
   lastAdmin.set(key, now)
   try { await tg('sendMessage', { chat_id: ADMIN_CHAT_ID, text: `[tg-alerts] ${text}` }, 10000) } catch {}
 }
-const dirSym = (d) => (d === 'above' ? '▲' : '▼')
+const dirSym = (d) => (d === 'reach' ? '◇' : d === 'above' ? '▲' : '▼')
 function alertsView(uid) {
   const list = db.alerts.filter((a) => a.userId === uid && a.status === 'active')
   const text = list.length
@@ -552,10 +559,12 @@ async function handleHttp(req, res) {
   if (p === '/api/alerts' && req.method === 'POST') {
     const b = await body(req)
     const level = typeof b.level === 'number' || typeof b.level === 'string' && b.level.trim() ? Number(b.level) : NaN
-    if (!SYMBOLS[b.symbol] || !allowedSyms(uid).includes(b.symbol) || !['above', 'below'].includes(b.dir) || !isFinite(level)) return json(res, 400, { error: 'bad input' })
+    const dir = b.dir ?? 'reach'
+    if (!SYMBOLS[b.symbol] || !allowedSyms(uid).includes(b.symbol) || !['reach', 'above', 'below'].includes(dir) || !isFinite(level) || level <= 0) return json(res, 400, { error: 'bad input' })
     const max = limitFor(uid)
     if (db.alerts.filter((x) => x.userId === uid && x.status === 'active').length >= max) return json(res, 400, { error: 'limit', max })
-    const a = { id: db.seq++, userId: uid, symbol: b.symbol, dir: b.dir, level, note: cleanNote(b.note), status: 'active', createdAt: Date.now() }
+    const a = { id: db.seq++, userId: uid, symbol: b.symbol, dir, level, note: cleanNote(b.note), status: 'active', createdAt: Date.now() }
+    if (dir === 'reach' && quoteFeed.fresh(b.symbol)) a.referencePrice = prices[b.symbol].price
     db.alerts.push(a); await save(); return json(res, 200, a)
   }
   const del = p.match(/^\/api\/alerts\/(\d+)$/)
@@ -563,6 +572,17 @@ async function handleHttp(req, res) {
     const a = db.alerts.find((x) => x.id === Number(del[1]) && x.userId === uid)
     if (!a) return json(res, 404, { error: 'not found' })
     const b = await body(req)
+    if ('level' in b) {
+      const level = typeof b.level === 'number' || typeof b.level === 'string' && b.level.trim() ? Number(b.level) : NaN
+      if (!Number.isFinite(level) || level <= 0) return json(res, 400, { error: 'bad input' })
+      if (a.status !== 'active') return json(res, 409, { error: 'alert_not_active' })
+      if (!allowedSyms(uid).includes(a.symbol)) return json(res, 403, { error: 'quote_access_required' })
+      // Idempotent retries of the same edit must not rearm an alert.
+      if (a.level !== level) {
+        a.level = level; a.dir = 'reach'; delete a.referencePrice
+        if (quoteFeed.fresh(a.symbol)) a.referencePrice = prices[a.symbol].price
+      }
+    }
     if ('note' in b) a.note = cleanNote(b.note)
     await save(); return json(res, 200, a)
   }

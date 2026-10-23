@@ -22,6 +22,7 @@ function fixture() {
    return {candles:before?(hasMore?[row(start-900),row(start-450)]:[]):[row(start)],limit:2000,hasMore:before?false:true,side:'mid',stale:false,requestedAt:Date.now()-2000,fetchedAt:Date.now(),windowStart:start-1800}
   }
   if(options?.method==='POST'){list=[...list,{...JSON.parse(options.body),id:list.length+1,status:'active'}];return list.at(-1)}
+  if(options?.method==='PATCH'){const a=list.find(x=>String(x.id)===path.split('/').at(-1));Object.assign(a,JSON.parse(options.body));return {...a}}
   if(options?.method==='DELETE'){list=list.filter(x=>String(x.id)!==path.split('/').at(-1));return{ok:true}}
   if(delayList){const fn=delayList;delayList=null;return fn()}
   return list.map(x=>({...x}))
@@ -31,6 +32,19 @@ function fixture() {
  return {el,intervals,frames,context,rangeChange:r=>rangeChange(r),crosshair:p=>crosshair(p),get range(){return range},setRange:r=>range=r,fireHold:()=>timers.at(-1)?.(),select:(s='GBPUSD')=>context.window.PriceChart.select(s),click:()=>click({point:{y:130}}),hold(){el('#chartCanvas').events.pointerdown(event());timers.at(-1)?.();el('#chartCanvas').events.pointermove(event(131));el('#chartCanvas').events.pointerup(event());el('#chartPlus').onclick()},event,setMore:v=>hasMore=v,setFail:v=>fail=v,setQuote:v=>quote={...quote,...v},delayList:fn=>delayList=fn,get table(){return table},get lines(){return lines},get lastRequest(){return lastRequest},get scale(){return scale},get list(){return list},get options(){return {chartOptions,seriesOptions}}}
 }
 const settle=()=>new Promise(r=>setImmediate(r))
+test('saved lines drag with mouse/touch, save by PATCH, cancel without mutation',async()=>{
+ const f=fixture();f.select();await settle();f.hold();await f.el('#chartAdd').onclick({target:f.el('#chartAdd')})
+ const c=f.el('#chartCanvas'),old=f.list[0].level
+ c.events.pointerdown(f.event(old*100));c.events.pointermove(f.event(145));c.events.pointerup(f.event(145))
+ assert.equal(f.el('#chartPrice').value,'1.45000');assert.equal(f.list[0].level,old)
+ f.el('#chartCancel').onclick();assert.equal(f.list[0].level,old)
+ const touch=y=>({touches:[f.event(y)],preventDefault(){},stopImmediatePropagation(){}})
+ c.events.touchstart(touch(old*100));c.events.touchmove(touch(155));c.events.touchend({...touch(155),touches:[]})
+ assert.equal(f.el('#chartPrice').value,'1.55000');assert.equal(f.el('#chartDelete').hidden,false)
+ await f.el('#chartAdd').onclick({target:f.el('#chartAdd')});assert.equal(f.list.length,1);assert.equal(f.list[0].id,1);assert.equal(f.list[0].level,1.55)
+ f.el('#chartExisting').onchange({target:{value:'1'}});f.el('#chartPrice').value='1.6';f.el('#chartPrice').oninput()
+ await f.el('#chartAdd').onclick({target:f.el('#chartAdd')});assert.equal(f.list.length,1);assert.equal(f.list[0].level,1.6)
+})
 test('unsaved line drags with mouse and touch without saving or dismissing ticket',async()=>{
  const f=fixture();f.select();await settle();f.hold();const c=f.el('#chartCanvas')
  assert.equal(f.lines.at(-1).lineStyle,0)
@@ -83,10 +97,10 @@ test('pagination retains existing candles and handles an expired cursor',async()
  const f=fixture();f.select();await settle();f.rangeChange({from:0,to:60});await settle();assert.equal(f.table.length,3)
  f.select();await settle();f.setMore(false);f.rangeChange({from:0,to:60});await settle();assert.equal(f.table.length,3)
 })
-test('freshness expires locally offline, history cache explicit, stale direction requires selection',async()=>{
+test('freshness expires locally offline; reach creation does not infer direction from stale data',async()=>{
  const f=fixture();f.select();await settle();assert.equal(f.el('#chartFresh').textContent,'')
  f.setQuote({dataTs:Date.now()-60000,observedAt:Date.now()-60000});f.intervals[1]();assert.match(f.el('#chartFresh').textContent,/Last price/)
- f.hold();assert.equal(f.el('#chartDirection').value,'');await f.el('#chartAdd').onclick({target:f.el('#chartAdd')});assert.equal(f.list.length,0)
+ f.hold();await f.el('#chartAdd').onclick({target:f.el('#chartAdd')});assert.equal(f.list.length,1);assert.equal(f.list[0].dir,undefined)
  f.setFail(true);f.intervals[0]();await settle();assert.equal(f.el('#chartRetry').hidden,false);assert.match(f.el('#chartFresh').textContent,/Cached history/)
 })
 test('old alert-list response cannot resurrect a deleted line',async()=>{

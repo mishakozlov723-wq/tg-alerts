@@ -41,9 +41,6 @@ h1{font-size:30px;font-weight:300;letter-spacing:-.015em;margin:8px 0 32px}
 .price{font-size:76px;font-weight:200;letter-spacing:-.04em;font-variant-numeric:tabular-nums;line-height:1;margin-top:40px}
 .psub{font-size:11px;color:var(--mut);letter-spacing:.22em;text-transform:uppercase;margin:12px 0 44px;font-weight:500}
 
-.dir{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:28px}
-.dir button{background:none;border:1px solid var(--line);border-radius:var(--r);padding:15px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:500;color:var(--mut);transition:.2s}
-.dir button.on{border-color:var(--txt);color:var(--txt)}
 
 .field{border-bottom:1px solid var(--line);padding:0 0 10px;transition:.2s}
 .field:focus-within{border-color:var(--txt)}
@@ -170,15 +167,10 @@ body.ready .rise{opacity:1;transform:none}
         <div id="chartFresh" role="status"></div><div id="chartStatus" role="status">Loading…</div>
         <button id="chartRetry" class="chart-action" hidden>Retry</button>
         <select id="chartExisting" aria-label="Existing alerts"><option value="">Select alert…</option></select>
-        <div id="chartTicket" hidden><label for="chartPrice">Alert price</label><input id="chartPrice" inputmode="decimal" autocomplete="off" aria-label="Alert price"><select id="chartDirection" aria-label="Alert condition"><option value="">Choose condition…</option><option value="above">▲ Price at or above</option><option value="below">▼ Price at or below</option></select><div class="chart-buttons"><button id="chartAdd" class="chart-action primary">Add alert</button><button id="chartDelete" class="chart-action" hidden>Delete alert</button><button id="chartCancel" class="chart-action">Cancel</button></div></div>
-        <p class="chart-credit">TradingView Lightweight Charts™ · Copyright (с) 2025 <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView, Inc.</a> · <a href="/lightweight-charts-LICENSE.txt">Apache 2.0</a></p>
+        <div id="chartTicket" hidden><label for="chartPrice">Alert price</label><input id="chartPrice" inputmode="decimal" autocomplete="off" aria-label="Alert price"><div class="chart-buttons"><button id="chartAdd" class="chart-action primary">Add alert</button><button id="chartDelete" class="chart-action" hidden>Delete alert</button><button id="chartCancel" class="chart-action">Cancel</button></div></div>
       </section>
       <button id="manualToggle" type="button" aria-expanded="true" aria-controls="manualBody" hidden><span>Manual alert</span><span class="manual-chevron" aria-hidden="true"></span></button>
       <div id="manualBody" class="manual-body"><div class="manual-inner">
-      <div class="dir">
-        <button class="on" id="d-above">▲ Above</button>
-        <button id="d-below">▼ Below</button>
-      </div>
       <div class="field">
         <label for="level">Price level</label>
         <input type="text" id="level" inputmode="decimal" enterkeyhint="done" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0.00000">
@@ -238,6 +230,7 @@ body.ready .rise{opacity:1;transform:none}
     <div class="h4-group"><div class="eyebrow lbl">Next close</div><div id="h4Schedule"></div></div>
   </section>
 </div>
+<footer class="chart-credit">TradingView Lightweight Charts™ · Copyright (с) 2025 <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView, Inc.</a> · <a href="/lightweight-charts-LICENSE.txt">Apache 2.0</a></footer>
 
 <nav class="tabs"><div>
   <button class="on" data-t="new">New</button>
@@ -274,7 +267,7 @@ async function ensureAccess(authApi) {
 }
 
 const shown = {}
-let cfg, prices = {}, sym = 'EURUSD', dir = 'above', settings = { lead: [], currencies: [] }, lastEvent = 0
+let cfg, prices = {}, sym = 'EURUSD', settings = { lead: [], currencies: [] }, lastEvent = 0
 const fmt = (s, v) => (v == null ? '—' : Number(v).toFixed(cfg.symbols[s].digits))
 
 // tab switching: fade the old page out, load the new page's data while hidden, then reveal it in one go
@@ -375,22 +368,20 @@ for (const id of ['level', 'liveText']) {
 
 function renderChips() {
   const pip = cfg.symbols[sym].pip
-  $('#chips').innerHTML = [10, 20, 50, 100].map((n) => `<button class="chip" data-n="${n}">${dir === 'above' ? '+' : '−'}${n}</button>`).join('')
+  $('#chips').innerHTML = [-50, -20, 20, 50].map((n) => `<button class="chip" data-n="${n}">${n > 0 ? '+' : '−'}${Math.abs(n)}</button>`).join('')
   $('#chips').querySelectorAll('.chip').forEach((c) => c.onclick = () => {
     const p = prices[sym]?.price; if (p == null) return
-    animateLevel(p + (dir === 'above' ? 1 : -1) * Number(c.dataset.n) * pip)
+    animateLevel(p + Number(c.dataset.n) * pip)
   })
 }
-$('#d-above').onclick = () => setDir('above'); $('#d-below').onclick = () => setDir('below')
-function setDir(d) { dir = d; $('#d-above').classList.toggle('on', d === 'above'); $('#d-below').classList.toggle('on', d === 'below'); renderChips() }
 
 $('#create').onclick = async () => {
   const level = readLevel()
   if (!isFinite(level)) return toast('Enter a price level')
-  const r = await api('/api/alerts', { method: 'POST', body: JSON.stringify({ symbol: sym, dir, level }) })
+  const r = await api('/api/alerts', { method: 'POST', body: JSON.stringify({ symbol: sym, level }) })
   if (r.error === 'limit') return toast(`Limit reached: ${r.max} active alerts. Delete one first.`)
   if (r.error) return toast('Error: ' + r.error)
-  toast(`Alert set · ${sym} ${dir} ${level}`); animateLevel(0, 2300, true)
+  toast(`Alert set · ${sym} ${level}`); animateLevel(0, 2300, true)
   window.PriceChart?.refreshAlerts()
 }
 
@@ -402,7 +393,7 @@ async function loadAlerts() {
   window.PriceChart?.refreshAlerts()
   $('#alist').innerHTML = list.length ? list.map((a) => `
     <div class="item ${a.status === 'active' ? '' : 'done'}" data-id="${a.id}"><div>
-      <div class="t">${a.symbol}<em>${a.dir === 'above' ? '▲ above' : '▼ below'}</em></div>
+      <div class="t">${a.symbol}<em>${a.dir === 'reach' ? 'Price level' : a.dir === 'above' ? '▲ above · legacy' : '▼ below · legacy'}</em></div>
       <div class="t" class="num" style="font-weight:200;font-size:26px;margin-top:2px">${a.level}</div>
       ${a.note ? `<div class="note">${esc(a.note)}</div>` : ''}
       <small>${a.status === 'active' ? 'Active' : 'Triggered ' + new Date(a.firedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' at ' + a.firedPrice}</small></div>
@@ -417,7 +408,7 @@ function editAlert(id) {
   if (!a || !row) return
   row.classList.add('editing')
   row.innerHTML = `
-    <div class="t" style="margin-bottom:14px">${a.symbol}<em>${a.dir === 'above' ? '▲ above' : '▼ below'} ${a.level}</em></div>
+    <div class="t" style="margin-bottom:14px">${a.symbol}<em>${a.dir === 'reach' ? 'Price level' : a.dir === 'above' ? '▲ above · legacy' : '▼ below · legacy'} ${a.level}</em></div>
     <div class="field"><label for="note-${a.id}">Notification text</label>
       <input type="text" id="note-${a.id}" maxlength="200" placeholder="e.g. Upper boundary taken" value="${esc(a.note || '')}"></div>
     <div class="erow"><button class="ed" data-a="cancel">Cancel</button><button class="ed save" data-a="save">Save</button></div>`

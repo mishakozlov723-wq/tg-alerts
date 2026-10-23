@@ -6,8 +6,21 @@
   let chosen, draft, lines = [], alerts = [], active = false, loadedAt = 0, lastLive = 0, listVersion = 0, historyStale = true
   let candidate = null, holding = false, hold, start, axisDrag, touchActive = false, multiTouch = false, scaleBase = null, candidateTime = null, manualAsset = null, draftDrag = false
   function draftHit(p) {
-    const price = candidate ?? (!chosen && !$('#chartTicket').hidden ? Number($('#chartPrice').value.replace(',', '.')) : NaN)
+    const price = candidate ?? (!$('#chartTicket').hidden ? Number($('#chartPrice').value.replace(',', '.')) : NaN)
     return Number.isFinite(price) && Math.abs((series.priceToCoordinate(price) ?? -1000) - p.y) <= 14
+  }
+  function lineHit(p) {
+    if (draftHit(p)) return true
+    const width = $('#chartCanvas').clientWidth - chart.priceScale('right').width()
+    if (p.x < 0 || p.x >= width || p.y >= $('#chartCanvas').clientHeight - 28) return false
+    const hit = ownAlerts().reduce((best, a) => {
+      const distance = Math.abs((series.priceToCoordinate(a.level) ?? -1000) - p.y)
+      return distance <= 14 && (!best || distance < best.distance) ? { a, distance } : best
+    }, null)
+    if (!hit) return false
+    chart.priceScale('right').applyOptions({ autoScale: false })
+    selection(hit.a.level, hit.a)
+    return true
   }
   function moveDraft(p) {
     const price = series.coordinateToPrice(clamp(p.y, 1, $('#chartCanvas').clientHeight - 29))
@@ -44,24 +57,28 @@
     if (draft) series.removePriceLine(draft)
     draft = null
     chart?.clearCrosshairPosition()
+    if (series) paintAlerts()
   }
   function selection(price, alert) {
     if (!Number.isFinite(price) || price <= 0) return
     chosen = alert || null; candidate = alert ? null : price
     $('#chartPrice').value = price.toFixed(5)
     $('#chartTicket').hidden = false; $('#chartPlus').hidden = true
-    $('#chartAdd').hidden = !!chosen; $('#chartAdd').textContent = 'Save alert'; $('#chartDelete').hidden = !chosen
-    const q = quote(), fresh = isFresh(q)
-    // Never infer direction from a stale quote: require an explicit choice.
-    $('#chartDirection').value = alert?.dir || (fresh ? (price >= q.price ? 'above' : 'below') : '')
-    paintDraft(price, 'Alert')
+    $('#chartAdd').hidden = false; $('#chartAdd').textContent = 'Save alert'; $('#chartDelete').hidden = !chosen
+    // Changes remain local until Save alert; retain chosen.id for PATCH.
+    $('#chartPrice').readOnly = false
+    paintDraft(price, 'Alert'); paintAlerts()
   }
   function paintAlerts() {
     for (const line of lines) series.removePriceLine(line)
-    lines = ownAlerts().map(a => series.createPriceLine({ price: a.level, color: palette.label, lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: `${a.dir === 'above' ? '▲' : '▼'} #${a.id}` }))
+    lines = ownAlerts().map(a => series.createPriceLine({ price: a.level, color: palette.label, lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: `${a.dir === 'reach' ? 'Alert' : a.dir === 'above' ? '▲' : '▼'} #${a.id}` }))
     const select = $('#chartExisting'); select.replaceChildren(new Option('Select alert…', ''))
-    for (const a of ownAlerts()) select.add(new Option(`${a.dir === 'above' ? '▲' : '▼'} ${Number(a.level).toFixed(5)} · #${a.id}`, String(a.id)))
+    for (const a of ownAlerts()) select.add(new Option(`${a.dir === 'reach' ? '' : a.dir === 'above' ? '▲ ' : '▼ '}${Number(a.level).toFixed(5)} · #${a.id}`, String(a.id)))
     if (chosen && !ownAlerts().some(a => a.id === chosen.id)) clearSelection()
+    if (chosen) {
+      select.value = String(chosen.id)
+      lines[ownAlerts().findIndex(a => a.id === chosen.id)]?.applyOptions({ lineVisible:false, axisLabelVisible:false })
+    }
   }
   async function loadAlerts() {
     const version = ++listVersion, list = await call('/api/alerts')
@@ -161,7 +178,7 @@
     const lib = window.LightweightCharts
     if (!lib) throw new Error('Chart library unavailable')
     chart = lib.createChart($('#chartCanvas'), { autoSize: true, height: 340,
-      layout: { background: { color: '#191919' }, textColor: '#aaa', attributionLogo: true },
+      layout: { background: { color: '#191919' }, textColor: '#aaa', attributionLogo: false },
       grid: { vertLines: { color: palette.grid }, horzLines: { color: palette.grid } },
       timeScale: { timeVisible: true, secondsVisible: false, minBarSpacing: 2, maxBarSpacing: 24, shiftVisibleRangeOnNewBar: false }, rightPriceScale: { borderColor: '#444', minimumWidth: 68 },
       crosshair: { mode: lib.CrosshairMode.Normal, vertLine: { color: palette.label, labelBackgroundColor: '#555551' }, horzLine: { color: palette.label, labelBackgroundColor: '#555551' } },
@@ -177,10 +194,10 @@
     })
     const canvas = $('#chartCanvas')
     canvas.addEventListener('contextmenu', e => e.preventDefault())
-    // Native tracking owns long-press; only a hit on the unsaved line is intercepted.
+    // Native tracking owns long-press; saved/draft line hits are intercepted for editing.
     canvas.addEventListener('touchstart', e => {
       touchActive = true; multiTouch = e.touches.length !== 1
-      draftDrag = !multiTouch && draftHit(point(e.touches[0]))
+      draftDrag = !multiTouch && lineHit(point(e.touches[0]))
       if (draftDrag) { e.preventDefault(); e.stopImmediatePropagation(); return }
       if (multiTouch || $('#chartTicket').hidden) clearSelection()
       const range = chart.priceScale('right').getVisibleRange()
@@ -215,7 +232,7 @@
       if (!e.isPrimary || e.button > 0) return
       const p = point(e)
       if (p.x >= canvas.clientWidth - chart.priceScale('right').width() || p.y >= canvas.clientHeight - 28) return
-      if (draftHit(p)) {
+      if (lineHit(p)) {
         draftDrag = true; holding = true
         chart.applyOptions({ handleScroll: { pressedMouseMove: false } })
         start = { x:e.clientX, y:e.clientY, id:e.pointerId }
@@ -262,7 +279,7 @@
     chart.timeScale().subscribeVisibleLogicalRangeChange(r => { if (r && r.from < 12 && hasMore) history(true) })
     $('#chartExisting').onchange = e => { const a = ownAlerts().find(a => String(a.id) === e.target.value); if (a) selection(a.level,a) }
     $('#chartPrice').oninput = () => {
-      chosen = null; $('#chartAdd').hidden = false; $('#chartDelete').hidden = true
+      $('#chartAdd').hidden = false; $('#chartDelete').hidden = !chosen
       const price = Number($('#chartPrice').value.replace(',','.'))
       candidate = Number.isFinite(price) && price > 0 ? price : null
       paintDraft(price, 'Alert')
@@ -278,10 +295,9 @@
       finally { button.disabled = false }
     }
     $('#chartAdd').onclick = e => mutate(e.target, async () => {
-      const value = $('#chartPrice').value.trim().replace(',','.'), level = Number(value), dir = $('#chartDirection').value
+      const value = $('#chartPrice').value.trim().replace(',','.'), level = Number(value)
       if (!/^\d+(?:\.\d+)?$/.test(value) || !Number.isFinite(level) || level <= 0) throw new Error('Enter a positive price')
-      if (!['above','below'].includes(dir)) throw new Error('Choose above or below')
-      await call('/api/alerts', { method:'POST', body:JSON.stringify({ symbol, level:Number(level.toFixed(5)), dir }) })
+      await call(chosen ? '/api/alerts/'+chosen.id : '/api/alerts', { method:chosen ? 'PATCH' : 'POST', body:JSON.stringify({ symbol, level:Number(level.toFixed(5)) }) })
     })
     $('#chartDelete').onclick = e => { if (chosen) return mutate(e.target, () => call('/api/alerts/'+chosen.id, {method:'DELETE'})) }
     $('#chartFrames').querySelectorAll('button').forEach(b => b.onclick = () => {

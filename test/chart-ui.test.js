@@ -5,12 +5,13 @@ import { readFileSync } from 'node:fs'
 const code=readFileSync(new URL('../public/price-chart.js',import.meta.url),'utf8')
 function fixture() {
  const elements=new Map(),intervals=[],timers=[],frames=['M15','H1','H4','D1'].map(tf=>({dataset:{tf},classList:{toggle(){}}}))
- const el=s=>{if(!elements.has(s))elements.set(s,{hidden:false,value:'',textContent:'',disabled:false,style:{},events:{},clientWidth:400,clientHeight:340,setAttribute(){},setPointerCapture(){},getBoundingClientRect:()=>({left:0,top:0}),querySelectorAll:()=>frames,replaceChildren(...a){this.options=a},add(a){this.options.push(a)},addEventListener(n,fn){this.events[n]=fn}});return elements.get(s)}
+ const el=s=>{if(!elements.has(s))elements.set(s,{hidden:false,value:'',textContent:'',disabled:false,style:{},events:{},clientWidth:400,clientHeight:340,attrs:{},classList:{add(){},remove(){},toggle(){}},contains:()=>false,focus(){},setAttribute(k,v){this.attrs[k]=v},getAttribute(k){return this.attrs[k]},setPointerCapture(){},getBoundingClientRect:()=>({left:0,top:0}),querySelectorAll:()=>frames,replaceChildren(...a){this.options=a},add(a){this.options.push(a)},addEventListener(n,fn){this.events[n]=fn}});return elements.get(s)}
  let quote={price:1.3,dataTs:Date.now(),observedAt:Date.now(),stale:false,tradeable:true},click,range=null,table=[],lines=[],lastRequest,hasMore=true,list=[],delayList=null,fail=false,scale={from:1.2,to:1.4},chartOptions,seriesOptions
- const series={setData(a){table=a},update(a){table[table.length-1]=a},createPriceLine(a){lines.push(a);return a},removePriceLine(a){lines=lines.filter(x=>x!==a)},priceToCoordinate:p=>p*100,coordinateToPrice:y=>y/100}
+ const series={setData(a){table=a},update(a){table[table.length-1]=a},createPriceLine(a){a.applyOptions=o=>Object.assign(a,o);lines.push(a);return a},removePriceLine(a){lines=lines.filter(x=>x!==a)},priceToCoordinate:p=>p*100,coordinateToPrice:y=>y/100}
  const priceScale={width:()=>68,getVisibleRange:()=>scale,setVisibleRange:r=>scale=r,applyOptions(){}}
- const chart={addSeries(_,o){seriesOptions=o;return series},priceScale:()=>priceScale,clearCrosshairPosition(){},setCrosshairPosition(){},subscribeClick(fn){click=fn},timeScale:()=>({coordinateToTime:()=>1,getVisibleLogicalRange:()=>range,setVisibleLogicalRange:r=>range=r,subscribeVisibleLogicalRangeChange(){}})}
- const context={window:{LightweightCharts:{createChart(_,o){chartOptions=o;return chart},CandlestickSeries:{},CrosshairMode:{Normal:0},TrackingModeExitMode:{OnNextTap:1}}},document:{querySelector:el,hidden:false,addEventListener(){}},setInterval:fn=>intervals.push(fn),setTimeout:fn=>(timers.push(fn),timers.length),clearTimeout:id=>{timers[id-1]=null},Date,AbortSignal,Option:function(text,value){this.text=text;this.value=value}}
+ let crosshair
+ const chart={applyOptions(o){chartOptions={...chartOptions,...o}},subscribeCrosshairMove(fn){crosshair=fn},addSeries(_,o){seriesOptions=o;return series},priceScale:()=>priceScale,clearCrosshairPosition(){},setCrosshairPosition(){},subscribeClick(fn){click=fn},timeScale:()=>({coordinateToTime:()=>1,getVisibleLogicalRange:()=>range,setVisibleLogicalRange:r=>range=r,subscribeVisibleLogicalRangeChange(){}})}
+ const context={window:{LightweightCharts:{createChart(_,o){chartOptions=o;return chart},CandlestickSeries:{},CrosshairMode:{Normal:0},TrackingModeExitMode:{OnNextTap:1,OnTouchEnd:0}}},document:{querySelector:el,hidden:false,addEventListener(){}},requestAnimationFrame:fn=>fn(),setInterval:fn=>intervals.push(fn),setTimeout:fn=>(timers.push(fn),timers.length),clearTimeout:id=>{timers[id-1]=null},Date,AbortSignal,Option:function(text,value){this.text=text;this.value=value}}
  vm.runInNewContext(code,context)
  const row=(time,close=1.3)=>({time,open:1.3,high:1.32,low:1.29,close,complete:false})
  const start=Math.floor(Date.now()/900000)*900
@@ -27,9 +28,36 @@ function fixture() {
  }
  context.window.PriceChart.connect({api,getQuote:()=>quote})
  const event=(y=130)=>({isPrimary:true,clientX:100,clientY:y,pointerId:1,preventDefault(){}})
- return {el,intervals,frames,context,select:(s='GBPUSD')=>context.window.PriceChart.select(s),click:()=>click({point:{y:130}}),hold(){el('#chartCanvas').events.pointerdown(event());timers.at(-1)?.();el('#chartCanvas').events.pointermove(event(131));el('#chartCanvas').events.pointerup(event());el('#chartPlus').onclick()},event,setMore:v=>hasMore=v,setFail:v=>fail=v,setQuote:v=>quote={...quote,...v},delayList:fn=>delayList=fn,get table(){return table},get lines(){return lines},get lastRequest(){return lastRequest},get scale(){return scale},get list(){return list},get options(){return {chartOptions,seriesOptions}}}
+ return {el,intervals,frames,context,crosshair:p=>crosshair(p),get range(){return range},setRange:r=>range=r,fireHold:()=>timers.at(-1)?.(),select:(s='GBPUSD')=>context.window.PriceChart.select(s),click:()=>click({point:{y:130}}),hold(){el('#chartCanvas').events.pointerdown(event());timers.at(-1)?.();el('#chartCanvas').events.pointermove(event(131));el('#chartCanvas').events.pointerup(event());el('#chartPlus').onclick()},event,setMore:v=>hasMore=v,setFail:v=>fail=v,setQuote:v=>quote={...quote,...v},delayList:fn=>delayList=fn,get table(){return table},get lines(){return lines},get lastRequest(){return lastRequest},get scale(){return scale},get list(){return list},get options(){return {chartOptions,seriesOptions}}}
 }
 const settle=()=>new Promise(r=>setImmediate(r))
+test('native touch crosshair immediately exposes plus without second timer; multi-touch cannot select',async()=>{
+ const f=fixture();f.select();await settle();const c=f.el('#chartCanvas')
+ c.events.touchstart({touches:[{}]});f.crosshair({point:{x:100,y:130}})
+ assert.equal(f.el('#chartPlus').hidden,false);assert.equal(f.el('#chartPlus').style.top,'130px')
+ c.events.touchend({touches:[]});f.intervals[0]();await settle();assert.equal(f.el('#chartPlus').hidden,false)
+ c.events.touchstart({touches:[{},{}]});f.crosshair({point:{x:100,y:131}});assert.equal(f.el('#chartPlus').hidden,true)
+ c.events.touchend({touches:[]});c.events.touchstart({touches:[{}]});f.crosshair({point:{x:100,y:1}})
+ assert.equal(f.el('#chartPlus').style.top,'22px');f.crosshair({});assert.equal(f.el('#chartPlus').hidden,true)
+})
+test('mouse hold locks pane pan, restores on cancel; repeated price drags stay bounded',async()=>{
+ const f=fixture();f.select();await settle();const c=f.el('#chartCanvas'),axis=f.el('#chartAxis'),base=f.scale.to-f.scale.from
+ c.events.pointerdown(f.event());f.fireHold();assert.equal(f.options.chartOptions.handleScroll.pressedMouseMove,false)
+ c.events.pointercancel(f.event());assert.equal(f.options.chartOptions.handleScroll.pressedMouseMove,true)
+ for(let i=0;i<8;i++){axis.onpointerdown(f.event(0));axis.onpointermove(f.event(2000));axis.onpointerup()}
+ assert.ok(f.scale.to-f.scale.from<=base*5+1e-10)
+ for(let i=0;i<8;i++){axis.onpointerdown(f.event(2000));axis.onpointermove(f.event(0));axis.onpointerup()}
+ assert.ok(f.scale.to-f.scale.from>=base/5-1e-10)
+ assert.equal(f.options.chartOptions.timeScale.minBarSpacing,2);assert.equal(f.options.chartOptions.timeScale.maxBarSpacing,24)
+})
+test('refresh preserves manual viewport; manual form collapses for chart symbols only',async()=>{
+ const f=fixture();f.select('EURUSD');await settle();const b=f.el('#manualBody'),t=f.el('#manualToggle')
+ assert.equal(b.inert,true);assert.equal(t.attrs['aria-expanded'],'false');t.onclick();assert.equal(b.inert,false)
+ f.select('EURUSD');assert.equal(b.inert,false)
+ const r={from:20,to:80};f.setRange(r);f.intervals[0]();await settle();assert.equal(f.range.from,r.from);assert.equal(f.range.to,r.to)
+ f.select('GBPUSD');assert.equal(b.inert,true);f.select('DXY');assert.equal(b.inert,false);assert.equal(t.hidden,true)
+ f.select('GBPUSD');assert.equal(b.inert,true);assert.equal(t.hidden,false)
+})
 test('tap never creates a candidate; hold, move, plus, correction, explicit create and delete',async()=>{
  const f=fixture();f.select();await settle();f.click();assert.equal(f.el('#chartTicket').hidden,true);assert.equal(f.el('#chartPlus').hidden,true)
  f.hold();assert.equal(f.el('#chartPrice').value,'1.31000');assert.equal(f.list.length,0)
@@ -63,6 +91,6 @@ test('EUR switch isolates lines and creates the correct symbol; DXY stays withou
 test('price-axis vertical drag changes range, pane movement cancels hold, monochrome palette',async()=>{
  const f=fixture();f.select();await settle();const axis=f.el('#chartAxis'),before=f.scale.to-f.scale.from
  axis.onpointerdown(f.event(100));axis.onpointermove(f.event(180));axis.onpointerup();assert.ok(f.scale.to-f.scale.from>before)
- const canvas=f.el('#chartCanvas');canvas.events.pointerdown(f.event());canvas.events.pointermove(f.event(180));canvas.events.pointerup();assert.equal(f.el('#chartPlus').hidden,true)
+ const canvas=f.el('#chartCanvas');canvas.events.pointerdown(f.event());canvas.events.pointermove(f.event(180));canvas.events.pointerup(f.event(180));assert.equal(f.el('#chartPlus').hidden,true)
  assert.equal(f.options.seriesOptions.upColor,'#d4d4d0');assert.equal(f.options.seriesOptions.downColor,'#666662');assert.equal(f.options.chartOptions.handleScale.pinch,true)
 })

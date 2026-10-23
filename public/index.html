@@ -173,6 +173,8 @@ body.ready .rise{opacity:1;transform:none}
         <div id="chartTicket" hidden><label for="chartPrice">Alert price</label><input id="chartPrice" inputmode="decimal" autocomplete="off" aria-label="Alert price"><select id="chartDirection" aria-label="Alert condition"><option value="">Choose condition…</option><option value="above">▲ Price at or above</option><option value="below">▼ Price at or below</option></select><div class="chart-buttons"><button id="chartAdd" class="chart-action primary">Add alert</button><button id="chartDelete" class="chart-action" hidden>Delete alert</button><button id="chartCancel" class="chart-action">Cancel</button></div></div>
         <p class="chart-credit">TradingView Lightweight Charts™ · Copyright (с) 2025 <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView, Inc.</a> · <a href="/lightweight-charts-LICENSE.txt">Apache 2.0</a></p>
       </section>
+      <button id="manualToggle" type="button" aria-expanded="true" aria-controls="manualBody" hidden><span>Manual alert</span><span class="manual-chevron" aria-hidden="true"></span></button>
+      <div id="manualBody" class="manual-body"><div class="manual-inner">
       <div class="dir">
         <button class="on" id="d-above">▲ Above</button>
         <button id="d-below">▼ Below</button>
@@ -183,6 +185,7 @@ body.ready .rise{opacity:1;transform:none}
       </div>
       <div class="chips" id="chips"></div>
       <button class="cta" id="create">Create alert</button>
+      </div></div>
     </div>
     <div class="dbg hide" id="dbg">
       <p>Test mode · simulated prices</p>

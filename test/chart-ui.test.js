@@ -9,8 +9,8 @@ function fixture() {
  let quote={price:1.3,dataTs:Date.now(),observedAt:Date.now(),stale:false,tradeable:true},click,range=null,table=[],lines=[],lastRequest,hasMore=true,list=[],delayList=null,fail=false,scale={from:1.2,to:1.4},chartOptions,seriesOptions
  const series={setData(a){table=a},update(a){table[table.length-1]=a},createPriceLine(a){a.applyOptions=o=>Object.assign(a,o);lines.push(a);return a},removePriceLine(a){lines=lines.filter(x=>x!==a)},priceToCoordinate:p=>p*100,coordinateToPrice:y=>y/100}
  const priceScale={width:()=>68,getVisibleRange:()=>scale,setVisibleRange:r=>scale=r,applyOptions(){}}
- let crosshair
- const chart={applyOptions(o){chartOptions={...chartOptions,...o}},subscribeCrosshairMove(fn){crosshair=fn},addSeries(_,o){seriesOptions=o;return series},priceScale:()=>priceScale,clearCrosshairPosition(){},setCrosshairPosition(){},subscribeClick(fn){click=fn},timeScale:()=>({coordinateToTime:()=>1,getVisibleLogicalRange:()=>range,setVisibleLogicalRange:r=>range=r,subscribeVisibleLogicalRangeChange(){}})}
+ let crosshair,rangeChange
+ const chart={applyOptions(o){chartOptions={...chartOptions,...o,handleScroll:{...chartOptions.handleScroll,...o.handleScroll}}},subscribeCrosshairMove(fn){crosshair=fn},addSeries(_,o){seriesOptions=o;return series},priceScale:()=>priceScale,clearCrosshairPosition(){},setCrosshairPosition(){},subscribeClick(fn){click=fn},timeScale:()=>({coordinateToTime:()=>1,getVisibleLogicalRange:()=>range,setVisibleLogicalRange:r=>range=r,subscribeVisibleLogicalRangeChange(fn){rangeChange=fn}})}
  const context={window:{LightweightCharts:{createChart(_,o){chartOptions=o;return chart},CandlestickSeries:{},CrosshairMode:{Normal:0},TrackingModeExitMode:{OnNextTap:1,OnTouchEnd:0}}},document:{querySelector:el,hidden:false,addEventListener(){}},requestAnimationFrame:fn=>fn(),setInterval:fn=>intervals.push(fn),setTimeout:fn=>(timers.push(fn),timers.length),clearTimeout:id=>{timers[id-1]=null},Date,AbortSignal,Option:function(text,value){this.text=text;this.value=value}}
  vm.runInNewContext(code,context)
  const row=(time,close=1.3)=>({time,open:1.3,high:1.32,low:1.29,close,complete:false})
@@ -28,17 +28,30 @@ function fixture() {
  }
  context.window.PriceChart.connect({api,getQuote:()=>quote})
  const event=(y=130)=>({isPrimary:true,clientX:100,clientY:y,pointerId:1,preventDefault(){}})
- return {el,intervals,frames,context,crosshair:p=>crosshair(p),get range(){return range},setRange:r=>range=r,fireHold:()=>timers.at(-1)?.(),select:(s='GBPUSD')=>context.window.PriceChart.select(s),click:()=>click({point:{y:130}}),hold(){el('#chartCanvas').events.pointerdown(event());timers.at(-1)?.();el('#chartCanvas').events.pointermove(event(131));el('#chartCanvas').events.pointerup(event());el('#chartPlus').onclick()},event,setMore:v=>hasMore=v,setFail:v=>fail=v,setQuote:v=>quote={...quote,...v},delayList:fn=>delayList=fn,get table(){return table},get lines(){return lines},get lastRequest(){return lastRequest},get scale(){return scale},get list(){return list},get options(){return {chartOptions,seriesOptions}}}
+ return {el,intervals,frames,context,rangeChange:r=>rangeChange(r),crosshair:p=>crosshair(p),get range(){return range},setRange:r=>range=r,fireHold:()=>timers.at(-1)?.(),select:(s='GBPUSD')=>context.window.PriceChart.select(s),click:()=>click({point:{y:130}}),hold(){el('#chartCanvas').events.pointerdown(event());timers.at(-1)?.();el('#chartCanvas').events.pointermove(event(131));el('#chartCanvas').events.pointerup(event());el('#chartPlus').onclick()},event,setMore:v=>hasMore=v,setFail:v=>fail=v,setQuote:v=>quote={...quote,...v},delayList:fn=>delayList=fn,get table(){return table},get lines(){return lines},get lastRequest(){return lastRequest},get scale(){return scale},get list(){return list},get options(){return {chartOptions,seriesOptions}}}
 }
 const settle=()=>new Promise(r=>setImmediate(r))
+test('unsaved line drags with mouse and touch without saving or dismissing ticket',async()=>{
+ const f=fixture();f.select();await settle();f.hold();const c=f.el('#chartCanvas')
+ assert.equal(f.lines.at(-1).lineStyle,0)
+ c.events.pointerdown(f.event(131));c.events.pointermove(f.event(140));c.events.pointerup(f.event(140))
+ assert.equal(f.el('#chartPrice').value,'1.40000');assert.equal(f.el('#chartTicket').hidden,false)
+ const touch=y=>({touches:[f.event(y)],preventDefault(){},stopImmediatePropagation(){}})
+ c.events.touchstart(touch(140));c.events.touchmove(touch(150));c.events.touchend({...touch(150),touches:[]})
+ assert.equal(f.el('#chartPrice').value,'1.50000');assert.equal(f.list.length,0)
+ c.events.touchstart(touch(80));f.crosshair({point:{x:100,y:90}});c.events.touchend({touches:[]})
+ assert.equal(f.el('#chartPrice').value,'1.50000');assert.equal(f.el('#chartTicket').hidden,false)
+ assert.equal(f.options.chartOptions.handleScroll.vertTouchDrag,true)
+ await f.el('#chartAdd').onclick({target:f.el('#chartAdd')});assert.equal(f.list[0].level,1.5)
+})
 test('native touch crosshair immediately exposes plus without second timer; multi-touch cannot select',async()=>{
  const f=fixture();f.select();await settle();const c=f.el('#chartCanvas')
- c.events.touchstart({touches:[{}]});f.crosshair({point:{x:100,y:130}})
+ c.events.touchstart({touches:[f.event(100)]});f.crosshair({point:{x:100,y:130}})
  assert.equal(f.el('#chartPlus').hidden,false);assert.equal(f.el('#chartPlus').style.top,'130px')
  c.events.touchend({touches:[]});f.intervals[0]();await settle();assert.equal(f.el('#chartPlus').hidden,false)
  c.events.touchstart({touches:[{},{}]});f.crosshair({point:{x:100,y:131}});assert.equal(f.el('#chartPlus').hidden,true)
- c.events.touchend({touches:[]});c.events.touchstart({touches:[{}]});f.crosshair({point:{x:100,y:1}})
- assert.equal(f.el('#chartPlus').style.top,'22px');f.crosshair({});assert.equal(f.el('#chartPlus').hidden,true)
+ c.events.touchend({touches:[]});c.events.touchstart({touches:[f.event(100)]});f.crosshair({point:{x:100,y:1}})
+ assert.equal(f.el('#chartPlus').style.top,'22px');f.crosshair({});assert.equal(f.el('#chartPlus').hidden,false)
 })
 test('mouse hold locks pane pan, restores on cancel; repeated price drags stay bounded',async()=>{
  const f=fixture();f.select();await settle();const c=f.el('#chartCanvas'),axis=f.el('#chartAxis'),base=f.scale.to-f.scale.from
@@ -67,8 +80,8 @@ test('tap never creates a candidate; hold, move, plus, correction, explicit crea
  await f.el('#chartDelete').onclick({target:f.el('#chartDelete')});assert.equal(f.el('#chartExisting').options.length,1)
 })
 test('pagination retains existing candles and handles an expired cursor',async()=>{
- const f=fixture();f.select();await settle();f.el('#chartOlder').onclick();await settle();assert.equal(f.table.length,3)
- f.select();await settle();f.setMore(false);f.el('#chartOlder').onclick();await settle();assert.equal(f.el('#chartOlder').hidden,true)
+ const f=fixture();f.select();await settle();f.rangeChange({from:0,to:60});await settle();assert.equal(f.table.length,3)
+ f.select();await settle();f.setMore(false);f.rangeChange({from:0,to:60});await settle();assert.equal(f.table.length,3)
 })
 test('freshness expires locally offline, history cache explicit, stale direction requires selection',async()=>{
  const f=fixture();f.select();await settle();assert.equal(f.el('#chartFresh').textContent,'')

@@ -528,7 +528,6 @@ function showErr(e) {
   if (cfg.authRequired) cfg = await api('/api/config', { signal: AbortSignal.timeout(10000) })
   restoreQuotes()
   renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)
-  if (Object.keys(prices).length) { reveal(); $('#splash')?.remove() }
   // Neither a slow broker response nor notification history blocks the screen.
   tick().catch(() => {})
   pollEvents().catch(() => {})

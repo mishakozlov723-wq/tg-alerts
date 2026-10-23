@@ -53,12 +53,12 @@ const snapshot = JSON.stringify({ version: 1, mock: false, prices: {
   GOLD: { price: 2500, dataTs: 1000, observedAt: 1000 },
 } })
 
-test('cached prices render before blocked network/history; unentitled assets are excluded', async () => {
+test('cached prices load behind the intro before blocked network/history; unentitled assets are excluded', async () => {
   const app = boot({ saved: 'valid-test-token', valid: true, cached: snapshot,
     pricesResponse: new Promise(() => {}), eventsResponse: new Promise(() => {}) })
   await settle()
   assert.equal(app.element('#price').textContent, '1.12345')
-  assert.equal(app.element('#splash').removed, true)
+  assert.equal(app.element('#splash').removed, false)
   assert.equal(vm.runInContext('prices.EURUSD.stale', app.context), true)
   assert.equal(vm.runInContext('prices.GOLD', app.context), undefined)
   assert.ok(app.requests.includes('/api/events?since=0'))

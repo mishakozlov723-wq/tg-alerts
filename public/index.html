@@ -163,6 +163,17 @@ body.ready .rise{opacity:1;transform:none}
     <div class="card">
       <div class="price" id="price">—</div>
       <div class="psub" id="psub">&nbsp;</div>
+      <section id="gbpChart" hidden aria-label="График GBPUSD">
+        <div class="chart-heading"><b>GBPUSD · OANDA</b><button id="chartReset" class="chart-action" type="button">К цене</button></div>
+        <div id="chartFrames" aria-label="Таймфрейм"><button class="on" data-tf="M15">M15</button><button data-tf="H1">H1</button><button data-tf="H4">H4</button><button data-tf="D1">D1</button></div>
+        <div id="chartCanvas" aria-label="Свечной график: нажмите на нужный уровень"></div>
+        <div id="chartFresh" role="status"></div><div id="chartStatus" role="status">Загрузка истории…</div>
+        <p class="chart-help">Нажмите или удерживайте уровень. Двигайте график одним пальцем, масштабируйте двумя. Цену можно уточнить числом. Время свечей — UTC; сессия OANDA — 17:00 New York.</p>
+        <button id="chartOlder" class="chart-action" hidden>Ранее</button><button id="chartRetry" class="chart-action" hidden>Повторить загрузку</button>
+        <select id="chartExisting" aria-label="Существующие алерты"><option value="">Выбрать существующий алерт…</option></select>
+        <div id="chartTicket" hidden><label for="chartPrice">Цена выбранного уровня</label><input id="chartPrice" inputmode="decimal" autocomplete="off" aria-label="Цена на графике"><select id="chartDirection" aria-label="Условие алерта"><option value="above">▲ Цена достигнет или превысит уровень</option><option value="below">▼ Цена достигнет или опустится ниже</option></select><div class="chart-buttons"><button id="chartAdd" class="chart-action primary">＋ Добавить алерт</button><button id="chartDelete" class="chart-action" hidden>Удалить алерт</button><button id="chartCancel" class="chart-action">Отмена</button></div></div>
+        <p class="chart-credit">TradingView Lightweight Charts™ · Copyright (с) 2025 <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView, Inc.</a> · <a href="/lightweight-charts-LICENSE.txt">Apache 2.0</a></p>
+      </section>
       <div class="dir">
         <button class="on" id="d-above">▲ Above</button>
         <button id="d-below">▼ Below</button>
@@ -234,6 +245,9 @@ body.ready .rise{opacity:1;transform:none}
   <button data-t="settings">Settings</button>
 </div></nav>
 
+<link rel="stylesheet" href="/price-chart.css">
+<script src="/lightweight-charts-5.0.9.js"></script>
+<script src="/price-chart.js"></script>
 <script src="/intro.js"></script>
 <script>
 const tg = window.Telegram?.WebApp
@@ -285,6 +299,7 @@ async function goTab(t, btn) {
   window.scrollTo(0, 0)
   enter(sec)
   curTab = t
+  window.PriceChart?.select(t === 'new' ? sym : null)
   switching = false
 }
 document.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => goTab(b.dataset.t, b)))
@@ -294,7 +309,7 @@ function renderTiles() {
   $('#tiles').classList.toggle('grid', keys.length >= 4)
   $('#tiles').innerHTML = keys.map((s) =>
     `<button class="asset ${s === sym ? 'on' : ''}" data-s="${s}"><b>${s}</b><span>${fmt(s, shown[s])}</span></button>`).join('')
-  $('#tiles').querySelectorAll('.asset').forEach((t) => t.onclick = () => { sym = t.dataset.s; renderTiles(); renderPrice(); renderChips(); $('#level').value = '' })
+  $('#tiles').querySelectorAll('.asset').forEach((t) => t.onclick = () => { sym = t.dataset.s; renderTiles(); renderPrice(); renderChips(); $('#level').value = ''; window.PriceChart?.select(sym) })
 }
 function renderPrice() { $('#price').textContent = fmt(sym, shown[sym]); $('#psub').textContent = sym + ' · live' }
 // smooth count to a new value in the Price level field
@@ -374,6 +389,7 @@ $('#create').onclick = async () => {
   if (r.error === 'limit') return toast(`Limit reached: ${r.max} active alerts. Delete one first.`)
   if (r.error) return toast('Error: ' + r.error)
   toast(`Alert set · ${sym} ${dir} ${level}`); animateLevel(0, 2300, true)
+  window.PriceChart?.refreshAlerts()
 }
 
 const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
@@ -381,6 +397,7 @@ let alertsCache = []
 async function loadAlerts() {
   const list = await api('/api/alerts')
   alertsCache = list
+  window.PriceChart?.refreshAlerts()
   $('#alist').innerHTML = list.length ? list.map((a) => `
     <div class="item ${a.status === 'active' ? '' : 'done'}" data-id="${a.id}"><div>
       <div class="t">${a.symbol}<em>${a.dir === 'above' ? '▲ above' : '▼ below'}</em></div>
@@ -487,6 +504,7 @@ async function tick() {
     for (const k in prices) if (shown[k] == null) shown[k] = prices[k].price
     saveQuotes()
     renderPrice()
+    window.PriceChart?.update(prices.GBPUSD)
   } finally { ticking = false }
 }
 let ticking = false
@@ -528,6 +546,8 @@ function showErr(e) {
   if (cfg.authRequired) cfg = await api('/api/config', { signal: AbortSignal.timeout(10000) })
   restoreQuotes()
   renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)
+  window.PriceChart?.connect({ api, getQuote: () => prices.GBPUSD })
+  window.PriceChart?.select(sym)
   // Neither a slow broker response nor notification history blocks the screen.
   tick().catch(() => {})
   pollEvents().catch(() => {})

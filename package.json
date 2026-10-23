@@ -6,17 +6,18 @@
     "start": "node server.js",
     "check": "node check.js",
     "test": "node --test test/*.test.js",
-    "test:cloudflare": "wrangler deploy --dry-run --outdir .cf-test && node --test test/cloudflare.test.mjs test/delivery-regressions.test.mjs test/quotes-regressions.test.mjs test/monitor.test.mjs",
+    "test:cloudflare": "wrangler deploy --dry-run --outdir .cf-test && node --test test/cloudflare.test.mjs test/delivery-regressions.test.mjs test/quotes-regressions.test.mjs test/monitor.test.mjs test/chart.test.mjs",
     "deploy:cloudflare": "wrangler deploy"
   },
   "dependencies": {
-    "dukascopy-node": "^1.45.0"
+    "dukascopy-node": "^1.45.0",
+    "lightweight-charts": "5.0.9"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
-    "wrangler": "4.152.0",
-    "miniflare": "5.20261019.2-beta"
+    "miniflare": "5.20261019.2-beta",
+    "wrangler": "4.152.0"
   }
 }

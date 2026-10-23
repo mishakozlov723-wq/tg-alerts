@@ -54,7 +54,14 @@ export class AlertsEngine extends DurableObject{
  serial(fn){const p=this.tail.then(fn);this.tail=p.catch(()=>{});return p}
  invalidate(){this.epoch++;this.coreJob=null;this.window?.controller.abort()}
  async core(){if(!this.coreJob)this.coreJob=createEngine(this.runtimeEnv).catch(e=>{this.coreJob=null;throw e});return this.coreJob}
- async fetch(req){return this.serial(async()=>{try{return await this.handle(req)}catch(e){if(!e.status||e.storageFailure){try{await(await this.core()).reportFailure('requests')}catch{};this.invalidate()};console.error('[alerts] operation failed; credentials/payload omitted');return json(e.status||503,{error:e.status?e.message:'service_or_storage_unavailable'})}})}
+ async fetch(req){
+  const chartRead=new URL(req.url).pathname==='/api/chart/candles'
+  const run=async()=>{try{return await this.handle(req)}catch(e){if(!e.status||e.storageFailure){const recover=async()=>{try{await(await this.core()).reportFailure('requests')}catch{};this.invalidate()};if(chartRead)await this.serial(recover);else await recover()};console.error('[alerts] operation failed; credentials/payload omitted');return json(e.status||503,{error:e.status?e.message:'service_or_storage_unavailable'})}}
+  // Read-only history has its own single-flight cache. A slow broker history
+  // request must not block price ingestion, alert mutations or Telegram delivery.
+  // Shared-state recovery, including monitor persistence, still uses the queue.
+  return chartRead?run():this.serial(run)
+ }
  async handle(req){
   const p=new URL(req.url).pathname,env=this.env,storage=this.ctx.storage
   if(p==='/internal/recover'){

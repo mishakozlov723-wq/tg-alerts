@@ -7,6 +7,7 @@ import { createH4Store } from '../h4-store.js'
 import { createLiveStore, LiveConflict } from '../live-store.js'
 import { newReminder, liveIdValid, liveView, createLiveRunner } from '../live.js'
 import { createQuoteFeed } from './quotes.mjs'
+import { createCandles } from './candles.mjs'
 import { createNews } from './news.mjs'
 import { validateMain } from './storage.mjs'
 import { createMonitor, statusKeyboard } from './monitor.mjs'
@@ -34,6 +35,7 @@ const PAY_DETAILS = env.PAY_DETAILS || ''
 
 // Durable local SQLite. Existing helper storage operations stay atomic locally.
 const redis = env.LOCAL_STORE.command
+const chartCandles = createCandles(env, redis)
 const USE_REDIS = true
 const saved = await redis(['GET','tg-alerts-db'])
 if (saved === null) throw Object.assign(new Error('storage_not_initialized'), { status: 503 })
@@ -539,6 +541,12 @@ async function handleHttp(req, res) {
 
   const uid = getUserId(req)
   if (!uid) return json(res, 401, { error: 'unauthorized' })
+
+  if (p === '/api/chart/candles') {
+    if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' })
+    if (!allowedSyms(uid).includes('GBPUSD')) return json(res, 403, { error: 'quote_access_required' })
+    return json(res, 200, await chartCandles.get(url.searchParams))
+  }
 
   if (p === '/api/alerts' && req.method === 'GET') return json(res, 200, db.alerts.filter((a) => a.userId === uid).reverse())
   if (p === '/api/alerts' && req.method === 'POST') {

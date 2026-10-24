@@ -1,3 +1,4 @@
+import { createAlertIcons } from './asset-icons.mjs'
 import { createUserAdmin } from './admin-users.mjs'
 // Cloudflare adapter: API and Telegram business rules retained from server.js.
 // Node/Render entrypoint remains untouched. One DO owns synchronous SQLite commits;
@@ -316,6 +317,12 @@ const tg = async (method, payload, ms = 15000) => {
   }
 }
 
+const alertIcons = createAlertIcons((...args) => tg(...args))
+function sendAlerts(method, fields, uid) {
+  const assets = db.alerts.filter((a) => a.userId === uid && a.status === 'active')
+  return alertIcons.send(method, fields, alertsView(uid), assets)
+}
+
 // ---------- admin messages to the owner in Telegram ----------
 const lastAdmin = new Map()
 async function adminNotify(text, key = text, minGapMs = 0) {
@@ -436,7 +443,7 @@ async function handleCallback(q) {
     db.alerts = db.alerts.filter((a) => !(a.id === Number(m[1]) && a.userId === uid))
     if (db.alerts.length !== before) await save()
     await ans('Deleted')
-    if (q.message) await tg('editMessageText', { chat_id: chat, message_id: mid, ...alertsView(uid) })
+    if (q.message) await sendAlerts('editMessageText', { chat_id: chat, message_id: mid }, uid)
     return
   }
   if ((m = data.match(/^buy:(\w+)$/))) {
@@ -542,7 +549,7 @@ async function handleUpdate(u) {
     }
   }
   if (/^\/alerts(@\w+)?(\s|$)/i.test(txt) || txt === MY_ALERTS_TEXT) {
-    await tg('sendMessage', { chat_id: m.chat.id, ...alertsView(uid) })
+    await sendAlerts('sendMessage', { chat_id: m.chat.id }, uid)
     return
   }
   if (/^\/quotes(@\w+)?(\s|$)/i.test(txt) || txt === ADD_TEXT) {

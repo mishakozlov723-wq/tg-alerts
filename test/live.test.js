@@ -128,6 +128,22 @@ test('network timeout or rejection not blindly retried; honest status remains',(
   let sends=0;const run=createLiveRunner({store,clock:()=>row.deliveries[0].at,deliver:async()=>{sends++;throw new Error('timeout')},onError:()=>{}})
   await run();await run();assert.equal(sends,1);assert.equal((await store.read('123',id)).deliveries[0].status,'unknown')
 }))
+test('safe rejection retries same Live occurrence after delay',()=>runnerFixture(async(store,row)=>{
+  let time=row.deliveries[0].at,sends=0
+  const run=createLiveRunner({store,clock:()=>time,deliver:async()=>{sends++;if(sends===1)throw Object.assign(new Error('rate limit'),{definite:true,retrySafe:true,retryAfterMs:5000})},onError:()=>{}})
+  await run();let current=await store.read('123',id)
+  assert.equal(current.deliveries[0].status,'pending');assert.equal(current.deliveries[0].retryAt,time+5000)
+  await run();assert.equal(sends,1)
+  time+=5001;await run();assert.equal(sends,2)
+  current=await store.read('123',id);assert.equal(current.deliveries[0].status,'sent');assert.equal(current.deliveries.length,1)
+  await run();assert.equal(sends,2)
+}))
+test('paused Live retry never sends a detached notification',()=>runnerFixture(async(store,row)=>{
+  let time=row.deliveries[0].at,sends=0
+  const run=createLiveRunner({store,clock:()=>time,deliver:async()=>{sends++;throw Object.assign(new Error('rate limit'),{retrySafe:true,retryAfterMs:5000})},onError:()=>{}})
+  await run();const current=await store.read('123',id);await store.cas('123',id,current,{...current,enabled:false})
+  time+=5001;await run();assert.equal(sends,1);assert.equal((await store.read('123',id)).deliveries[0].status,'missed')
+}))
 test('definite Telegram rejection marked failed',()=>runnerFixture(async(store,row)=>{
   await createLiveRunner({store,clock:()=>row.deliveries[0].at,deliver:async()=>{const e=new Error('403');e.definite=true;throw e},onError:()=>{}})()
   assert.equal((await store.read('123',id)).deliveries[0].status,'failed')

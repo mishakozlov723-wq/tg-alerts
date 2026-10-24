@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { timingSafeEqual } from 'node:crypto'
+import { timingSafeEqual, createHmac } from 'node:crypto'
 import { createEngine } from './core.mjs'
 import { createLocalStore, emptyMain } from './storage.mjs'
 import { verifyAccessToken } from '../shared/access-token.mjs'
@@ -53,14 +53,30 @@ export class AlertsEngine extends DurableObject{
  }
  serial(fn){const p=this.tail.then(fn);this.tail=p.catch(()=>{});return p}
  invalidate(){this.epoch++;this.coreJob=null;this.window?.controller.abort()}
- async core(){if(!this.coreJob)this.coreJob=createEngine(this.runtimeEnv).catch(e=>{this.coreJob=null;throw e});return this.coreJob}
+ async core(){
+  if(!this.coreJob){
+   const epoch=this.epoch,check=()=>{if(epoch!==this.epoch)throw abortError()}
+   // Retired engines can finish network waits, but cannot send again or write
+   // their stale whole-database snapshot over a newly created engine.
+   const env={...this.runtimeEnv,LOCAL_STORE:{command:c=>{check();return this.local.command(c)}},
+    FETCH:(...args)=>{check();return this.runtimeEnv.FETCH(...args)}}
+   const job=createEngine(env).catch(e=>{if(this.coreJob===job)this.coreJob=null;throw e})
+   this.coreJob=job
+  }
+  return this.coreJob
+ }
  async fetch(req){
-  const chartRead=new URL(req.url).pathname==='/api/chart/candles'
-  const run=async()=>{try{return await this.handle(req)}catch(e){if(!e.status||e.storageFailure){const recover=async()=>{try{await(await this.core()).reportFailure('requests')}catch{};this.invalidate()};if(chartRead)await this.serial(recover);else await recover()};console.error('[alerts] operation failed; credentials/payload omitted');return json(e.status||503,{error:e.status?e.message:'service_or_storage_unavailable'})}}
+  const path=new URL(req.url).pathname
+  const chartRead=req.method==='GET'&&['/api/chart/candles','/api/news','/api/h4/status'].includes(path)
+  const webhook=path==='/telegram/webhook'
+  const independent=chartRead||webhook||['/admin/activate','/admin/inspect','/health'].includes(path)
+  const run=async()=>{try{return await this.handle(req)}catch(e){if(e.name!=='AbortError'&&(!e.status||e.storageFailure)){const recover=async()=>{try{await(await this.core()).reportFailure('requests')}catch{};this.invalidate()};if(independent)await this.serial(recover);else await recover()};console.error('[alerts] operation failed; credentials/payload omitted');return json(e.status||503,{error:e.status?e.message:'service_or_storage_unavailable'})}}
   // Read-only history has its own single-flight cache. A slow broker history
   // request must not block price ingestion, alert mutations or Telegram delivery.
   // Shared-state recovery, including monitor persistence, still uses the queue.
-  return chartRead?run():this.serial(run)
+  // Webhooks retain their own ordering/deduplication without holding quote ingestion.
+  if(webhook){const job=(this.webhookTail||Promise.resolve()).then(run);this.webhookTail=job.catch(()=>{});return job}
+  return independent?run():this.serial(run)
  }
  async handle(req){
   const p=new URL(req.url).pathname,env=this.env,storage=this.ctx.storage
@@ -143,15 +159,17 @@ export class AlertsEngine extends DurableObject{
     const core=await this.core();this.lastSchedulerRun=Date.now();timer=setTimeout(()=>controller.abort(),seconds*1000)
     if(await this.ctx.storage.get('monitorSchedulerFailure')) { await this.serial(()=>core.reportFailure()); await this.ctx.storage.delete('monitorSchedulerFailure') }
     const stream=core.stream(controller.signal,dispatch)
-    const reminders=(async()=>{while(!controller.signal.aborted){try{await dispatch(()=>core.housekeeping())}catch(e){if(e.storageFailure)throw e;if(!e.retrySafe&&e.name!=='AbortError')throw e};await sleep(10000,controller.signal)}})()
-    const capital=(async()=>{while(!controller.signal.aborted){try{await dispatch(()=>core.capital())}catch(e){if(e.storageFailure)throw e};await sleep(1500,controller.signal)}})()
+    const reminders=(async()=>{while(!controller.signal.aborted){try{await core.housekeeping()}catch(e){if(e.storageFailure)throw e;if(!e.retrySafe&&e.name!=='AbortError')throw e};await sleep(10000,controller.signal)}})()
+    const capital=(async()=>{while(!controller.signal.aborted){try{await core.capital(dispatch)}catch(e){if(e.storageFailure)throw e};await sleep(1500,controller.signal)}})()
     // REST reconciliation runs independently of stream heartbeats. Network waits
     // stay outside the mutation queue; only ingestion is serialized.
     const quotes=(async()=>{while(!controller.signal.aborted){await core.refreshQuotes(dispatch);await sleep(10000,controller.signal)}})()
     const fail=p=>p.catch(e=>{controller.abort();throw e})
-    const result=await Promise.allSettled([fail(stream),fail(reminders),fail(capital),fail(quotes)])
+    // Outbox sends have their own single-flight claim, never a network wait in serial().
+    const delivery=(async()=>{while(!controller.signal.aborted){await core.flushEvents();await sleep(250,controller.signal)}})()
+    const result=await Promise.allSettled([fail(stream),fail(reminders),fail(capital),fail(quotes),fail(delivery)])
     const faults=result.filter(r=>r.status==='rejected'&&r.reason?.name!=='AbortError'&&!r.reason?.retrySafe)
-    if(faults.length){failed=true;try{await this.ctx.storage.put('monitorSchedulerFailure',true)}catch{};this.invalidate()}
+    if(faults.length&&epoch===this.epoch){failed=true;try{await this.ctx.storage.put('monitorSchedulerFailure',true)}catch{};this.invalidate()}
     if(Date.now()-(await this.ctx.storage.get('lastCleanup')||0)>3600000){
      this.local.cleanup();const entries=await this.ctx.storage.list({prefix:'update:',limit:5000}),expired=[...entries].filter(([,v])=>Date.now()-v.at>7*86400000).map(([k])=>k)
      if(expired.length)await this.ctx.storage.delete(expired);await this.ctx.storage.put('lastCleanup',Date.now())
@@ -183,8 +201,10 @@ async function handle(req,env){
       const b=await data(req)
       if(!/^\d{6}$/.test(String(b.code||'')))return json(400,{error:'invalid_code'})
       const url=new URL('/api/verify-code',env.AUTH_API_URL||'https://retocker-access.retocker.workers.dev')
+      const at=String(Date.now()),client=createHmac('sha256',env.ACCESS_SIGNING_SECRET).update('client-ip:'+(req.headers.get('cf-connecting-ip')||'unknown')).digest('hex')
+      const signature=createHmac('sha256',env.ACCESS_SIGNING_SECRET).update(`alerts-client:${at}:${client}`).digest('hex')
       let r,j
-      try{r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({project:'alerts',code:b.code}),redirect:'manual',signal:AbortSignal.timeout(10000)})}catch{return json(502,{error:'access_connection_failed'})}
+      try{r=await fetch(url,{method:'POST',headers:{'content-type':'application/json','x-access-client':client,'x-access-client-time':at,'x-access-client-signature':signature},body:JSON.stringify({project:'alerts',code:b.code}),redirect:'manual',signal:AbortSignal.timeout(10000)})}catch{return json(502,{error:'access_connection_failed'})}
       try{j=await r.json()}catch{return json(502,{error:'access_unexpected_response'})}
       if(j.token&&!verifyAccessToken(j.token,'alerts',env.ACCESS_SIGNING_SECRET))return json(503,{error:'access_signing_secret_mismatch'})
       return json(r.status,j)
@@ -201,7 +221,8 @@ async function handle(req,env){
     // Authenticated configuration is loaded by bootstrap, not during rendering.
     html=html.replace('if (shown[k] == null) continue','if (shown[k] == null || !cfg.symbols[k]) continue')
     html=html.replace("fetch(authApi.replace(/\\/$/, '') + '/api/verify-code'", "fetch('/api/access/redeem'")
-    html=html.replace("catch { status.textContent = 'Invalid or already used code.' }", "catch (e) { const messages = { access_signing_secret_mismatch: 'Ошибка настройки: ACCESS_SIGNING_SECRET в Alerts не совпадает с Access. Этот код уже погашен; после исправления получите новый.', too_many_attempts: 'Слишком много попыток. Подождите 15 минут и получите новый код.', invalid_or_expired_code: 'Код истёк или уже использован. Получите новый код Alerts в Access.', invalid_code: 'Введите шестизначный код Alerts.', configuration_incomplete: 'В Alerts не заполнены обязательные настройки.', access_connection_failed: 'Нет связи между Alerts и Access. Сообщите об этой ошибке.', access_unexpected_response: 'Cloudflare вернул неожиданный ответ вместо Access. Сообщите об этой ошибке.', service_unavailable: 'Access вернул внутреннюю ошибку. Сообщите об этой ошибке.' }; status.textContent = messages[e.message] || 'Не удалось выполнить вход. Проверьте соединение и адрес приложения. Если повторяется — сообщите об ошибке.' }")
+    html=html.replace("status.textContent = r.status === 429 ? 'Too many attempts. Please wait before trying again.' : r.status >= 500 ? 'Access service unavailable. Try again.' : 'Invalid or already used code.'", "throw new Error(result.error || 'invalid_code')")
+    html=html.replace("catch { status.textContent = 'Network error or timeout. Try again; request a new code if it was already used.' }",  "catch (e) { const messages = { access_signing_secret_mismatch: 'Ошибка настройки: ACCESS_SIGNING_SECRET в Alerts не совпадает с Access. Этот код уже погашен; после исправления получите новый.', too_many_attempts: 'Слишком много попыток. Подождите 15 минут и получите новый код.', invalid_or_expired_code: 'Код истёк или уже использован. Получите новый код Alerts в Access.', invalid_code: 'Введите шестизначный код Alerts.', configuration_incomplete: 'В Alerts не заполнены обязательные настройки.', access_connection_failed: 'Нет связи между Alerts и Access. Сообщите об этой ошибке.', access_unexpected_response: 'Cloudflare вернул неожиданный ответ вместо Access. Сообщите об этой ошибке.', service_unavailable: 'Access вернул внутреннюю ошибку. Сообщите об этой ошибке.' }; status.textContent = messages[e.message] || 'Не удалось выполнить вход. Проверьте соединение и адрес приложения. Если повторяется — сообщите об ошибке.' }")
     html=html.replace("setInterval(() => tick().catch(() => {}), 400)", "setInterval(() => {if (!document.hidden) tick().catch(() => {})}, 1000)")
     html=html.replace("sym + ' · live'", "sym + ' · streaming'")
     html=html.replace(/\/\/ smooth glide of displayed prices[\s\S]*?(?=const QUOTE_CACHE_KEY)/, `// Display actual snapshots only, never animated intermediate prices.

@@ -1,5 +1,6 @@
 // Cloudflare adapter: API and Telegram business rules retained from server.js.
-// Node/Render entrypoint remains untouched. All async mutations are serialized by one DO.
+// Node/Render entrypoint remains untouched. One DO owns synchronous SQLite commits;
+// broker ingestion is serialized, background network waits are independent.
 import crypto from 'node:crypto'
 import { verifyAccessToken } from '../shared/access-token.mjs'
 import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner } from '../h4.js'
@@ -11,6 +12,7 @@ import { createCandles } from './candles.mjs'
 import { createNews } from './news.mjs'
 import { validateMain } from './storage.mjs'
 import { createMonitor, statusKeyboard } from './monitor.mjs'
+import { sampleFeedWatch } from './feed-watch.mjs'
 
 export async function createEngine(env) {
 const fetch = env.FETCH || globalThis.fetch
@@ -43,7 +45,7 @@ let db = validateMain(JSON.parse(saved))
 quoteFeed.restore(await redis(['GET','tg-alerts:quotes:v1']))
 const save = async () => {
   try { await redis(['SET', 'tg-alerts-db', JSON.stringify(db)]) }
-  catch { const e = new Error('durable_storage_unavailable'); e.storageFailure = true; throw e }
+  catch (cause) { if (cause.name === 'AbortError') throw cause; const e = new Error('durable_storage_unavailable'); e.storageFailure = true; throw e }
 }
 // The monitoring recipient is deliberately explicit; legacy payment fallback is not authorization.
 const monitorAdmin = /^\d+$/.test(String(env.ADMIN_CHAT_ID || '')) ? String(env.ADMIN_CHAT_ID) : ''
@@ -101,6 +103,14 @@ function enqueue(userId, text, extra = {}) {
 }
 async function deliverEvent(event) {
   if (event.delivery !== 'pending' || (event.retryAt || 0) > Date.now()) return event.delivery
+  const h4 = event.h4 && (await getH4Store())?.get(event.userId)
+  // Recheck after awaits: a parallel delivery may already own this entry.
+  if (event.delivery !== 'pending') return event.delivery
+  if (event.expiresAt && event.expiresAt <= Date.now() || event.orderId && db.orders[event.orderId]?.status !== 'paid' ||
+      event.h4 && (!h4?.enabled || h4.since !== event.h4.since || !h4.symbols.includes(event.h4.symbol) || !h4Allowed(event.userId, event.h4.symbol)) ||
+      event.feedNotice && !feedNoticeCurrent(event, feedRecipients())) {
+    event.delivery = 'expired'; await save(); return event.delivery
+  }
   event.delivery = 'attempting'
   await save() // Unknown outcomes after this checkpoint must never be blindly retried.
   if (BOT_TOKEN && /^\d+$/.test(event.userId)) {
@@ -141,15 +151,17 @@ async function getH4Store() {
   return h4StoreJob
 }
 const h4Allowed = (uid, symbol) => Boolean(H4_ASSETS[symbol]) && allowedSyms(uid).includes(symbol)
-async function deliverH4(uid, text) {
-  // Unlike legacy notify(), check Telegram's response and bound the request time.
+async function deliverLive(uid, text) {
   if (!BOT_TOKEN || !/^\d+$/.test(uid)) throw new Error('Telegram delivery is not configured for this user')
-  let result
-  try { result = await tg('sendMessage', { chat_id: uid, text }, 10000) }
-  catch(e) { if(e.retrySafe){ enqueue(uid, text, { retryAt: Date.now() + (e.retryAfterMs || 0) }); await save() }; throw e }
-  if (!result.ok) { const e = new Error('Telegram delivery rejected'); e.definite = true; throw e }
-  db.events.push({ id: db.seq++, userId: uid, text, ts: Date.now() })
-  trimEvents()
+  // The Live runner owns its claim/retry/status; never create a detached retry.
+  await tg('sendMessage', { chat_id: uid, text }, 10000)
+  db.events.push({ id: db.seq++, userId: uid, text, ts: Date.now(), delivery: 'sent' })
+  trimEvents(); await save()
+}
+async function deliverH4(uid, text, { event, settings }) {
+  // Keep identity, settings version and deadline with the durable outbox entry.
+  enqueue(uid, text, { h4: { symbol: event.symbol, since: settings.since },
+    expiresAt: event.at + (event.lead ? 60000 : 120000) })
   await save()
 }
 const runH4 = createH4Runner({
@@ -174,7 +186,7 @@ async function getLiveStore() {
   liveStoreJob = createLiveStore({ redis: USE_REDIS ? redis : null, file: null })
     .then((store) => {
       liveStore = store
-      liveRunner = createLiveRunner({ store, deliver: deliverH4, onError: () => { taskErrors.live = true } })
+      liveRunner = createLiveRunner({ store, deliver: deliverLive, onError: () => { taskErrors.live = true } })
       return store
     }).catch((e) => { liveRetry = Date.now() + 30000; console.error('[live storage]', e.message); return null })
     .finally(() => { liveStoreJob = null })
@@ -206,7 +218,8 @@ async function onTick(sym, price) {
     if (!hit) continue
     a.status = 'fired'; a.firedAt = Date.now(); a.firedPrice = price; changed = true
     const shownPrice = Number(price).toFixed(SYMBOLS[sym].digits)
-    await notify(a.userId, a.note ? `🔔 ${sym} · ${shownPrice}\n${a.note}` : `🔔 ${sym} ${a.dir === 'reach' ? 'reached' : a.dir} ${a.level} (price ${shownPrice})`)
+    enqueue(a.userId, a.note ? `🔔 ${sym} · ${shownPrice}\n${a.note}` : `🔔 ${sym} ${a.dir === 'reach' ? 'reached' : a.dir} ${a.level} (price ${shownPrice})`)
+    // Fired state and outbox commit together; Telegram never holds the tick queue.
   }
   if (changed) await save()
 }
@@ -461,17 +474,21 @@ async function handleCallback(q) {
     const o = db.orders[m[2]]
     if (!o) return ans('Not found')
     if (o.status !== 'paid' && o.status !== 'new') { await ans('Already handled'); return }
-    if (m[1] === 'ok') {
-      o.status = 'approved'; await grant(o.userId, o.symbol)
-      await ans('Approved')
-      await edit(`✅ Approved #${o.id}\n${who(o)}\n${nice(o.symbol)}`)
-      await notify(o.userId, `✅ ${nice(o.symbol)} is added. Open Alerts and pick it in the list. Your alert limit is now ${PRO_ALERTS}.`)
-    } else {
-      o.status = 'declined'; await save()
-      await ans('Declined')
-      await edit(`✕ Declined #${o.id}\n${who(o)}\n${nice(o.symbol)}`)
-      await notify(o.userId, `❌ Payment for ${nice(o.symbol)} was not confirmed. If you did pay, contact the admin.`)
+    const approved = m[1] === 'ok'
+    o.status = approved ? 'approved' : 'declined'
+    if (approved) {
+      const list = BUNDLES[o.symbol] ? BUNDLES[o.symbol].syms : [o.symbol]
+      db.owned[o.userId] = [...new Set([...(db.owned[o.userId] || []), ...list])]
     }
+    const event = enqueue(o.userId, approved
+      ? `✅ ${nice(o.symbol)} is added. Open Alerts and pick it in the list. Your alert limit is now ${PRO_ALERTS}.`
+      : `❌ Payment for ${nice(o.symbol)} was not confirmed. If you did pay, contact the admin.`)
+    o.resultEventId = event.id
+    // Commit rights, terminal status and buyer outbox before fallible Telegram UI calls.
+    await save()
+    await ans(approved ? 'Approved' : 'Declined')
+    await edit(`${approved ? '✅ Approved' : '✕ Declined'} #${o.id}\n${who(o)}\n${nice(o.symbol)}`)
+    await deliverEvent(event)
     return
   }
   await ans()
@@ -688,7 +705,18 @@ async function handleHttp(req, res) {
   json(res, 404, { error: 'not found' })
 }
 
-let feedDown = false, downUsers = []
+// Network waits run outside the tick queue. SQLite commands commit synchronously;
+// event claims are set before awaits and Live/H4 preferences use atomic CAS.
+let deliveryJob = null
+function flushEvents() {
+  if (deliveryJob) return deliveryJob
+  deliveryJob = (async () => {
+    for (const event of db.events.filter(e => e.delivery === 'pending')) await deliverEvent(event)
+  })().finally(() => { deliveryJob = null })
+  return deliveryJob
+}
+// Persist notification state with the same atomic record as its outbox.
+db.feedWatch ||= {}
 
 return {
   async http(request) {
@@ -723,17 +751,15 @@ return {
   async probe() { return quoteFeed.probe() },
   feedStatus() { return quoteFeed.status() },
   async stream(signal, dispatch) { return quoteFeed.stream(onTick, signal, dispatch) },
-  async capital() { return quoteFeed.capital(onTick) },
+  async capital(dispatch) { return quoteFeed.capital(onTick, dispatch) },
+  flushEvents,
   async refreshQuotes(dispatch) { return quoteFeed.refresh(onTick, dispatch) },
   async housekeeping() {
+    // Sample before slow background requests can hold up queued price ingestion.
+    await watchFeed()
     // Bounded display-cache checkpoint; never write on every market tick.
     await quoteFeed.checkpoint(redis)
-    for (const event of db.events.filter(e=>e.delivery==='pending')) {
-      if (event.expiresAt && event.expiresAt <= Date.now() || event.orderId && db.orders[event.orderId]?.status !== 'paid') {
-        event.delivery = 'expired'; await save(); continue
-      }
-      await deliverEvent(event)
-    }
+    await flushEvents()
     taskErrors.live = false; taskErrors.h4 = false; taskErrors.news = false
     // A failing subsystem must not prevent checks of the others.
     for (const [key, fn] of [['live', checkLive], ['h4', checkH4], ['news', checkNews]]) {
@@ -742,23 +768,49 @@ return {
     }
     lastHousekeeping = Date.now()
     monitor.progress(lastHousekeeping)
-    await watchFeed()
     if (monitorAdmin && env.MONITOR_ALERTS !== 'false') { await refreshDiagnostics(); await monitor.notify() }
   },
   async inspect() { const h4 = await getH4Store(), live = await getLiveStore(); if (!h4 || !live) throw new Error('reminder_storage_unavailable'); return { alerts: db.alerts.length, activeAlerts: db.alerts.filter(a=>a.status==='active').length, purchases: Object.keys(db.owned).length, h4Users: Object.keys(h4.all()).length, liveReminders: live.all().length } },
 }
+function feedRecipients() {
+  const recipients = {}
+  for (const a of db.alerts) {
+    if (a.status !== 'active' || isPremium(a.symbol) && !ownsQuote(a.userId, a.symbol)) continue
+    ;(recipients[a.userId] ||= {})[a.symbol] = quoteFeed.fresh(a.symbol)
+  }
+  // The owner receives one report, not both admin and ordinary-user copies.
+  if (BOT_TOKEN && ADMIN_CHAT_ID) {
+    const all = Object.assign({}, ...Object.values(recipients))
+    if (Object.keys(all).length) recipients[ADMIN_CHAT_ID] = all
+  }
+  return recipients
+}
+function feedNoticeCurrent(event, recipients) {
+  const symbols = recipients[event.userId]
+  if (!quoteFeed.marketOpen() || !symbols) return false
+  const bad = Object.values(symbols).some(fresh => !fresh)
+  return event.feedNotice === 'warning' ? bad : !bad
+}
 async function watchFeed() {
   if(Date.now()-engineBornAt<20000)return // avoid a false outage warning while initial stream connects
-  const stale = db.alerts.filter(a => a.status === 'active' && quoteFeed.marketOpen() && !quoteFeed.fresh(a.symbol))
-  const users = [...new Set(stale.map(a=>a.userId))]
-  if (users.length && !feedDown) {
-    feedDown = true; downUsers = users
-    await adminNotify('Price feed unavailable. Streaming alerts paused until fresh quotes arrive.', 'feed', 300000)
-    for (const uid of users) await notify(uid, '⚠️ Price feed unavailable. Price alerts are paused until fresh quotes arrive.')
-  } else if (!users.length && feedDown) {
-    feedDown = false
-    for (const uid of downUsers) await notify(uid, '✅ Price feed recovered. Streaming alerts are active again.')
-    downUsers = []
+  const recipients = feedRecipients()
+  const { messages, changed } = sampleFeedWatch(db.feedWatch, { now: Date.now(), open: quoteFeed.marketOpen(), recipients })
+  let cancelled = false
+  for (const event of db.events.filter(e => e.feedNotice && e.delivery === 'pending')) {
+    if (!feedNoticeCurrent(event, recipients)) {
+      event.delivery = 'expired'; cancelled = true
+    }
   }
+  for (const message of messages) {
+    if (message.kind === 'recovery') {
+      const warning = db.events.findLast(e => e.userId === message.userId && e.feedNotice === 'warning')
+      // Do not announce recovery from a warning that was never delivered.
+      if (!warning || !['sent', 'unknown', 'attempting'].includes(warning.delivery)) continue
+    }
+    enqueue(message.userId, message.text, { feedNotice: message.kind, expiresAt: Date.now() + 120000 })
+  }
+  // Commit hysteresis/cooldown and pending messages together. Existing delivery
+  // handles safe retries and never blindly resends an unknown Telegram outcome.
+  if (changed || messages.length || cancelled) await save()
 }
 }

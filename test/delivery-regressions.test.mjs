@@ -27,7 +27,7 @@ function fixture(main, now) {
     }
     if (url.hostname === 'demo-api-capital.backend-capital.com') {
       if (url.pathname.endsWith('/session')) return Response.json({}, { headers: { cst: 'fixture', 'x-security-token': 'fixture' } })
-      return Response.json({ marketDetails: ['GOLD', 'DE40', 'SILVER'].map(epic => ({ instrument: { epic }, snapshot: { bid: 100, offer: 101, marketStatus: 'TRADEABLE' } })) })
+      return Response.json({ marketDetails: ['GOLD', 'DE40', 'SILVER'].map(epic => ({ instrument: { epic }, snapshot: { bid: 100, offer: 101, marketStatus: 'TRADEABLE', updateTimeUTC: new Date(Date.now()).toISOString() } })) })
     }
     if (url.hostname.includes('faireconomy')) return Response.json(articles)
     throw new Error('No live network: ' + url.hostname)
@@ -40,7 +40,7 @@ test('price crossing queues a rejected notification and never fires it twice', a
   const f = fixture({ alerts: [{ id: 1, userId: uid, symbol: 'XAUUSD', dir: 'above', level: 99, status: 'active' }], owned: { [uid]: ['XAUUSD'] }, seq: 2 })
   const env = { ...f.env, CAPITAL_API_KEY: 'fixture', CAPITAL_IDENTIFIER: 'fixture', CAPITAL_PASSWORD: 'fixture' }
   try {
-    f.setResponse('429'); const engine = await createEngine(env); await engine.capital()
+    f.setResponse('429'); const engine = await createEngine(env); await engine.capital(); await engine.flushEvents()
     let d = await f.main(); assert.equal(d.alerts[0].status, 'fired'); assert.equal(d.events[0].delivery, 'pending')
     await engine.capital(); assert.equal(f.calls.filter(c => c.method === 'sendMessage').length, 1)
     now += 6000; f.setResponse('ok'); const restarted = await createEngine(env); await restarted.housekeeping(); await restarted.capital()
@@ -78,6 +78,19 @@ for (const [response, expected] of [['timeout', 'unknown'], ['403', 'failed']]) 
   } finally { f.db.close() }
 })
 function payment() { return { orders: { 1: { id: 1, userId: uid, symbol: 'METALS', status: 'new' } }, seq: 2 } }
+for (const decision of ['ok', 'no']) for (const method of ['answerCallbackQuery','editMessageText']) test(`${decision} buyer confirmation survives ${method} failure and restart`, async () => {
+  const f=fixture({orders:{1:{id:1,userId:uid,symbol:'METALS',status:'paid'}},seq:2})
+  const update={callback_query:{id:'fixture',from:{id:Number(admin)},data:decision+':1',message:{chat:{id:Number(admin)},message_id:10}}}
+  try {
+    f.failMethod(method);await assert.rejects((await createEngine(f.env)).update(update))
+    let d=await f.main();assert.equal(d.orders[1].status,decision==='ok'?'approved':'declined')
+    assert.equal(d.events.length,1);assert.equal(d.events[0].delivery,'pending')
+    assert.equal((d.owned[uid]||[]).includes('XAUUSD'),decision==='ok')
+    f.failMethod('');const core=await createEngine(f.env);await core.flushEvents();await core.update(update)
+    d=await f.main();assert.equal(d.events.length,1);assert.equal(d.events[0].delivery,'sent')
+    assert.equal(f.calls.filter(c=>c.method==='sendMessage').length,1)
+  } finally {f.db.close()}
+})
 const paid = () => ({ callback_query: { id: 'fake', from: { id: Number(uid) }, data: 'paid:1', message: { chat: { id: Number(uid) }, message_id: 10 } } })
 for (const method of ['answerCallbackQuery', 'editMessageText']) test(`payment reaches admin despite ${method} failure; repeat is deduplicated`, async () => {
   const f = fixture(payment())
@@ -112,6 +125,18 @@ test('news catches up beyond 90 seconds, coalesces leads, never sends past event
     assert.equal(f.calls.filter(c => c.method === 'sendMessage').length, 1)
   } finally { f.db.close() }
 })
+test('pending H4 retries expire on settings change or deadline rather than send detached messages', async () => {
+  for(const mode of ['changed','expired','valid']) {
+    const now=Date.now(), f=fixture({events:[{id:1,userId:uid,text:'H4 retry',delivery:'pending',h4:{symbol:'EURUSD',since:1},expiresAt:mode==='expired'?now-1:now+60000}],seq:2})
+    try {
+      await f.store.command(['HSET','tg-alerts:{h4}:settings:v1',uid,JSON.stringify({enabled:true,symbols:['EURUSD'],lead:[1],atClose:true,since:mode==='changed'?2:1})])
+      const core=await createEngine(f.env);await core.flushEvents()
+      assert.equal((await f.main()).events[0].delivery,mode==='valid'?'sent':'expired')
+      assert.equal(f.calls.length,mode==='valid'?1:0)
+    } finally {f.db.close()}
+  }
+})
+
 test('queued news expires instead of sending after release time', async () => {
   const f = fixture({ events: [{ id: 1, userId: uid, text: 'Old news', delivery: 'pending', expiresAt: Date.now() - 1 }], seq: 2 })
   try { await (await createEngine(f.env)).housekeeping(); assert.equal((await f.main()).events[0].delivery, 'expired'); assert.equal(f.calls.length, 0) } finally { f.db.close() }

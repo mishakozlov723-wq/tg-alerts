@@ -6,6 +6,7 @@ let serverTime = Date.now(), receivedAt = performance.now()
 const now = () => serverTime + performance.now() - receivedAt
 async function request(url, options = {}) {
   const r = await fetch(url, { ...options, headers: { ...H, ...options.headers }, signal: AbortSignal.timeout(15000) })
+  if (r.status === 401) recoverAccess()
   const data = await r.json()
   if (!r.ok || data.error) throw new Error(data.error || 'Cannot reach server')
   return data

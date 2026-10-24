@@ -189,6 +189,7 @@ body.ready .rise{opacity:1;transform:none}
   <section id="p-alerts" class="hide">
     <div class="eyebrow">Alerts</div>
     <h1>Your levels.</h1>
+    <div id="alertsStatus" role="status" class="note"></div>
     <div id="alist"></div>
   </section>
 
@@ -253,16 +254,72 @@ if (tg?.initData) {
 const $ = (s) => document.querySelector(s)
 const H = { 'content-type': 'application/json' }
 if (tg?.initData) H['x-init-data'] = tg.initData
-const api = (u, o = {}) => fetch(u, { ...o, headers: { ...H, ...(o.headers || {}) } }).then((r) => r.json())
+async function api(u, o = {}) {
+  const r = await fetch(u, { ...o, headers: { ...H, ...(o.headers || {}) } })
+  if (r.status === 401 && u !== '/api/access/check') recoverAccess()
+  const result = await r.json()
+  if (!r.ok && (o.method || 'GET') === 'GET' && u !== '/api/access/check') throw new Error(result.error || 'Request failed')
+  return result
+}
+let accessRecovery = null
+function recoverAccess() {
+  if (accessRecovery || !cfg?.authRequired) return accessRecovery
+  delete H['x-access-token']; try { localStorage.removeItem(ACCESS_KEY) } catch {}
+  accessRecovery = (async () => {
+    for (;;) {
+      if (!(await ensureAccess(cfg.authApi))) return
+      try {
+        const next = await api('/api/config', { signal: AbortSignal.timeout(10000) })
+        if (!next.symbols || next.error) throw new Error('Configuration unavailable')
+        cfg = next
+        // Refresh current rights; never replay a failed mutation automatically.
+        for (const k in prices) if (!cfg.symbols[k]) { delete prices[k]; delete shown[k] }
+        if (!cfg.symbols[sym]) { sym = Object.keys(cfg.symbols)[0]; $('#level').value = '' }
+        renderTiles(); renderPrice(); renderChips()
+        window.PriceChart?.select(curTab === 'new' ? sym : null)
+        const reload = curTab === 'alerts' ? loadAlerts : curTab === 'news' ? loadNews : curTab === 'settings' ? () => window.H4Settings?.load() : curTab === 'live' ? () => window.LiveReminders?.load() : null
+        if (reload) Promise.resolve(reload()).catch(() => toast('Could not reload. Try the tab again.'))
+        tick().catch(() => {})
+        return
+      } catch {
+        delete H['x-access-token']; try { localStorage.removeItem(ACCESS_KEY) } catch {}
+        showAccessGate()
+        $('#accessStatus').textContent = 'Could not refresh access. Enter a new code and try again.'
+      }
+    }
+  })().finally(() => { accessRecovery = null })
+  accessRecovery.catch(() => { showAccessGate(); $('#accessStatus').textContent = 'Could not restore access. Reopen the app.' })
+  return accessRecovery
+}
 const ACCESS_KEY = 'retocker.access.alerts.v1'
 const savedAccess = localStorage.getItem(ACCESS_KEY)
 if (savedAccess) H['x-access-token'] = savedAccess
 async function ensureAccess(authApi) {
   if (!authApi) { $('#accessStatus').textContent = 'Access server is not configured.'; showAccessGate(); return false }
-  if (H['x-access-token']) { const check = await api('/api/access/check'); if (check.ok) return true; localStorage.removeItem(ACCESS_KEY); delete H['x-access-token'] }
+  if (H['x-access-token']) { const check = await api('/api/access/check', { signal: AbortSignal.timeout(10000) }); if (check.ok) return true; try { localStorage.removeItem(ACCESS_KEY) } catch {} delete H['x-access-token'] }
   showAccessGate()
   const form = $('#accessForm'); const input = $('#accessCode'); const status = $('#accessStatus'); input.focus()
-  if (!form.dataset.bound) { form.dataset.bound = '1'; form.onsubmit = async (e) => { e.preventDefault(); const code = input.value.trim(); if (!/^\d{6}$/.test(code)) { status.textContent = 'Enter the 6-digit code.'; return } status.textContent = 'Checking code…'; try { const result = await fetch(authApi.replace(/\/$/, '') + '/api/verify-code', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: 'alerts', code }) }).then((r) => r.json()); if (!result.token) throw new Error(result.error || 'invalid_code'); localStorage.setItem(ACCESS_KEY, result.token); H['x-access-token'] = result.token; $('#accessGate').classList.add('hide'); status.textContent = ''; window.dispatchEvent(new Event('retocker-access-ready')) } catch { status.textContent = 'Invalid or already used code.' } } }
+  if (!form.dataset.bound) {
+    form.dataset.bound = '1'; let busy = false
+    form.onsubmit = async (e) => {
+      e.preventDefault(); if (busy) return
+      const code = input.value.trim()
+      if (!/^\d{6}$/.test(code)) { status.textContent = 'Enter the 6-digit code.'; return }
+      busy = true; status.textContent = 'Checking code…'
+      try {
+        const r = await fetch(authApi.replace(/\/$/, '') + '/api/verify-code', { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: 'alerts', code }) })
+        const result = await r.json()
+        if (!result.token) {
+          status.textContent = r.status === 429 ? 'Too many attempts. Please wait before trying again.' : r.status >= 500 ? 'Access service unavailable. Try again.' : 'Invalid or already used code.'
+          return
+        }
+        try { localStorage.setItem(ACCESS_KEY, result.token) } catch {}
+        H['x-access-token'] = result.token; $('#accessGate').classList.add('hide'); status.textContent = ''; input.value = ''
+        window.dispatchEvent(new Event('retocker-access-ready'))
+      } catch { status.textContent = 'Network error or timeout. Try again; request a new code if it was already used.' }
+      finally { busy = false }
+    }
+  }
   return new Promise((resolve) => window.addEventListener('retocker-access-ready', () => resolve(true), { once: true }))
 }
 
@@ -386,11 +443,25 @@ $('#create').onclick = async () => {
 }
 
 const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
-let alertsCache = []
+let alertsCache = [], alertsRequest = 0
+const noteDrafts = new Map()
 async function loadAlerts() {
-  const list = await api('/api/alerts')
-  alertsCache = list
-  window.PriceChart?.refreshAlerts()
+  const request = ++alertsRequest
+  try {
+    const list = await api('/api/alerts')
+    if (!Array.isArray(list)) throw new Error('Could not load alerts')
+    if (request !== alertsRequest) return
+    alertsCache = list
+    $('#alertsStatus').textContent = ''
+    window.PriceChart?.refreshAlerts()
+    renderAlerts()
+  } catch {
+    if (request === alertsRequest) $('#alertsStatus').textContent = 'Could not load alerts. Existing levels and drafts are kept. Reopen this tab to retry.'
+  }
+}
+function renderAlerts() {
+  const list = alertsCache
+  const focused = document.activeElement?.id, selection = document.activeElement?.selectionStart
   $('#alist').innerHTML = list.length ? list.map((a) => `
     <div class="item ${a.status === 'active' ? '' : 'done'}" data-id="${a.id}"><div>
       <div class="t">${a.symbol}<em>${a.dir === 'reach' ? 'Price level' : a.dir === 'above' ? '▲ above · legacy' : '▼ below · legacy'}</em></div>
@@ -398,25 +469,53 @@ async function loadAlerts() {
       ${a.note ? `<div class="note">${esc(a.note)}</div>` : ''}
       <small>${a.status === 'active' ? 'Active' : 'Triggered ' + new Date(a.firedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' at ' + a.firedPrice}</small></div>
       <div class="acts">${a.status === 'active' ? `<button class="ed" data-id="${a.id}">Edit</button>` : ''}<button class="x" data-id="${a.id}" aria-label="Delete alert">✕</button></div></div>`).join('') : '<div class="empty">No alerts yet.</div>'
-  $('#alist').querySelectorAll('.x').forEach((b) => b.onclick = async () => { await api('/api/alerts/' + b.dataset.id, { method: 'DELETE' }); loadAlerts() })
+  $('#alist').querySelectorAll('.x').forEach((b) => b.onclick = async () => {
+    try {
+      const result = await api('/api/alerts/' + b.dataset.id, { method: 'DELETE' })
+      if (!result.ok) throw new Error(result.error || 'Could not delete alert')
+      noteDrafts.delete(String(b.dataset.id)); await loadAlerts()
+    } catch { toast('Could not delete alert. Try again.') }
+  })
   $('#alist').querySelectorAll('.acts .ed').forEach((b) => b.onclick = () => editAlert(b.dataset.id))
+  for (const id of noteDrafts.keys()) editAlert(id, false)
+  if (focused?.startsWith('note-')) {
+    const input = document.getElementById(focused)
+    input?.focus(); if (input && selection != null) input.setSelectionRange(selection, selection)
+  }
 }
 
-function editAlert(id) {
+function editAlert(id, focus = true) {
   const a = alertsCache.find((x) => String(x.id) === String(id))
   const row = $('#alist').querySelector(`.item[data-id="${id}"]`)
   if (!a || !row) return
+  id = String(id)
+  if (!noteDrafts.has(id)) noteDrafts.set(id, { value: a.note || '', saving: false })
+  const draft = noteDrafts.get(id)
   row.classList.add('editing')
   row.innerHTML = `
     <div class="t" style="margin-bottom:14px">${a.symbol}<em>${a.dir === 'reach' ? 'Price level' : a.dir === 'above' ? '▲ above · legacy' : '▼ below · legacy'} ${a.level}</em></div>
     <div class="field"><label for="note-${a.id}">Notification text</label>
-      <input type="text" id="note-${a.id}" maxlength="200" placeholder="e.g. Upper boundary taken" value="${esc(a.note || '')}"></div>
+      <input type="text" id="note-${a.id}" maxlength="200" placeholder="e.g. Upper boundary taken" value="${esc(draft.value)}"></div>
     <div class="erow"><button class="ed" data-a="cancel">Cancel</button><button class="ed save" data-a="save">Save</button></div>`
-  const inp = row.querySelector('input'); inp.focus()
-  const save = async () => { await api('/api/alerts/' + a.id, { method: 'PATCH', body: JSON.stringify({ note: inp.value }) }); loadAlerts() }
-  row.querySelector('[data-a=save]').onclick = save
-  row.querySelector('[data-a=cancel]').onclick = () => loadAlerts()
-  inp.onkeydown = (e) => { if (e.key === 'Enter') save() }
+  const inp = row.querySelector('input'); if (focus) inp.focus()
+  inp.oninput = () => { draft.value = inp.value }
+  const saveButton = row.querySelector('[data-a=save]')
+  saveButton.disabled = draft.saving
+  const save = async () => {
+    if (draft.saving) return
+    draft.value = inp.value; const submitted = draft.value
+    draft.saving = true; saveButton.disabled = true
+    try {
+      const result = await api('/api/alerts/' + a.id, { method: 'PATCH', body: JSON.stringify({ note: submitted }) })
+      if (result.error || result.id !== a.id) throw new Error('Save rejected')
+      if (noteDrafts.get(id) === draft && draft.value === submitted) noteDrafts.delete(id)
+      await loadAlerts()
+    } catch { toast('Could not save note. Your draft is kept.') }
+    finally { draft.saving = false; saveButton.disabled = false; renderAlerts() }
+  }
+  saveButton.onclick = save
+  row.querySelector('[data-a=cancel]').onclick = () => { if (!draft.saving) { noteDrafts.delete(id); renderAlerts() } }
+  inp.onkeydown = (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); save() } }
 }
 
 async function loadNews() {
@@ -489,6 +588,7 @@ async function tick() {
   ticking = true
   try {
     const next = await fetch('/api/prices', { headers: H, signal: AbortSignal.timeout(10000) })
+    if (next.status === 401) recoverAccess()
     if (!next.ok) throw new Error('quotes_unavailable')
     const snapshot = await next.json()
     if (!snapshot || snapshot.error || Array.isArray(snapshot)) throw new Error('quotes_unavailable')

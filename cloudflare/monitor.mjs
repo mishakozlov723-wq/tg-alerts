@@ -22,7 +22,11 @@ export async function createMonitor({ store, send, clock = Date.now }) {
   }
   state.startedAt ||= clock()
   let dirty = true, savedAt = 0, notifying = false
-  function progress(at = clock()) { state.housekeepingAt = at; state.schedulerFailed = !at; dirty = true }
+  function progress(at = clock()) {
+    // A completed recovery must survive an immediate restart, not wait for throttle.
+    if (at && (state.schedulerFailed || state.parts.scheduler?.level === 'error')) savedAt = 0
+    state.housekeepingAt = at; state.schedulerFailed = !at; dirty = true
+  }
   async function flush(force = false) {
     if (!dirty || !force && clock() - savedAt < 60000) return
     await store(['SET', KEY, JSON.stringify(state)])

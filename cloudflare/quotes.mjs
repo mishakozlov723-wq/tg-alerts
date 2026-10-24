@@ -33,7 +33,7 @@ export function createQuoteFeed(env){
  async function checkpoint(store){if(revision===savedRevision)return;const n=revision;await store(['SET','tg-alerts:quotes:v1',JSON.stringify({version:1,identity,prices,mids,times})]);savedRevision=n}
  const unavailable=(symbols,list)=>{feedStatus.missing=[...new Set([...feedStatus.missing.filter(s=>!symbols.includes(s)),...list])]}
  const stamp=raw=>typeof raw==='string'&&/^\d+(\.\d+)?$/.test(raw)?Number(raw)*1000:Date.parse(raw)
- const marketOpen=()=>{const d=new Date(),day=d.getUTCDay(),h=d.getUTCHours();return day!==6&&!(day===5&&h>=21)&&!(day===0&&h<22)}
+ const marketOpen=()=>{const d=new Date(Date.now()),day=d.getUTCDay(),h=d.getUTCHours();return day!==6&&!(day===5&&h>=21)&&!(day===0&&h<22)}
  async function get(path){const r=await fetch(host+path,{headers:{authorization:`Bearer ${env.OANDA_TOKEN}`,'accept-datetime-format':'UNIX'},signal:AbortSignal.timeout(8000)});if(!r.ok)throw new Error('OANDA_request_failed');return r.json()}
  async function discover(){
   if(!env.OANDA_TOKEN)throw new Error('OANDA_token_missing')
@@ -98,12 +98,12 @@ export function createQuoteFeed(env){
     if(e.storageFailure)throw e
     if(signal.aborted)break
     errors.oanda='OANDA_stream_interrupted';source='polling_fallback';connected=false
-    try{await pull(onTick,dispatch)}catch(x){if(x.storageFailure)throw x;errors.oanda='OANDA_feed_unavailable'}
+    await refresh(onTick,dispatch)
     if(!signal.aborted)await pause(1000,signal).catch(()=>{})
    }finally{connected=false;clearTimeout(timer);signal.removeEventListener('abort',stop);if(cancelRead)controller.signal.removeEventListener('abort',cancelRead);controller.abort();if(reader)await reader.cancel().catch(()=>{})}
   }
  }
-  async function pollCapital(onTick) {
+  async function pollCapital(onTick, dispatch=fn=>fn()) {
     if(!capOn || Date.now()<capNext)return
     const base=env.CAPITAL_ENV==='live'?'https://api-capital.backend-capital.com':'https://demo-api-capital.backend-capital.com'
     try {
@@ -122,9 +122,18 @@ export function createQuoteFeed(env){
         const item=items.find(([,c])=>c.capital===(m.instrument?.epic||m.epic));if(!item)continue
         const [s,c]=item,bid=Number(m.snapshot?.bid),ask=Number(m.snapshot?.offer)
         if(!Number.isFinite(bid)||!Number.isFinite(ask))continue
-        const valid=m.snapshot.marketStatus==='TRADEABLE';trade[s]=valid;seen.push(s)
+        const raw=m.snapshot.updateTimeUTC
+        // Capital's UTC field has no offset. Never interpret it in the host timezone.
+        const dataTs=typeof raw==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?$/.test(raw)?Date.parse(raw.endsWith('Z')?raw:raw+'Z'):NaN
+        seen.push(s)
         const side=env.CAPITAL_SIDE||'mid',v=side==='bid'?bid:side==='ask'?ask:(bid+ask)/2
-        await setPrice(s,v+(c.offset||0),valid?onTick:null,{dataTs:Date.now(),tradeable:valid})
+        await dispatch(async()=>{
+          if(!Number.isFinite(dataTs)||dataTs>Date.now()+60000){trade[s]=false;return}
+          if(dataTs<(prices[s]?.dataTs||0))return
+          const valid=m.snapshot.marketStatus==='TRADEABLE'&&Date.now()-dataTs<=30000
+          trade[s]=valid
+          await setPrice(s,v+(c.offset||0),valid?onTick:null,{dataTs,tradeable:valid})
+        })
       }
       unavailable(items.map(([s])=>s),items.filter(([s])=>!seen.includes(s)).map(([s])=>s))
       capFails=0;errors.capital=null

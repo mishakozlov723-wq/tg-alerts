@@ -14,7 +14,7 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('content-type', 'application/json')
     return res.end(JSON.stringify({ ok: false, error: 'invalid_code' }))
   }
-  const files = { '/': 'index.html', '/intro.js': 'intro.js', '/h4-settings.js': 'h4-settings.js', '/live-reminders.js': 'live-reminders.js', '/live-time.js': 'live-time.js' }
+  const files = { '/': 'index.html', '/intro.js': 'intro.js', '/h4-settings.js': 'h4-settings.js', '/live-reminders.js': 'live-reminders.js', '/live-time.js': 'live-time.js', '/price-chart.css': 'price-chart.css', '/price-chart.js': 'price-chart.js', '/lightweight-charts-5.0.9.js': 'lightweight-charts-5.0.9.js' }
   if (!files[url.pathname]) { res.writeHead(404); return res.end() }
   try {
     let body = await readFile(new URL(files[url.pathname], root), 'utf8')
@@ -22,7 +22,7 @@ const server = http.createServer(async (req, res) => {
       // Remove external resources only in this isolated fixture, not in the application.
       body = body.replace(/<link[^>]*https:\/\/[^>]*>/g, '').replace(/<script src="https:\/\/[^>]*><\/script>/g, '')
     }
-    res.setHeader('content-type', url.pathname === '/' ? 'text/html; charset=utf-8' : 'text/javascript')
+    res.setHeader('content-type', url.pathname === '/' ? 'text/html; charset=utf-8' : url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript')
     res.end(body)
   } catch { res.writeHead(500); res.end('Fixture asset unavailable') }
 })

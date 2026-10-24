@@ -6,7 +6,7 @@ import vm from 'node:vm'
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
 const script = html.match(/<script>\s*([\s\S]*?)<\/script>/)[1]
 
-function boot({ saved = null, valid = false, authApi = '/local-access', redeemedToken = null, cached = null, pricesResponse = {}, eventsResponse = [], storageFails = false } = {}) {
+function boot({ saved = null, valid = false, authApi = '/local-access', redeemedToken = null, cached = null, pricesResponse = {}, eventsResponse = [], storageFails = false, expirePrices = false } = {}) {
   const elements = new Map()
   const element = (id) => {
     if (!elements.has(id)) {
@@ -41,11 +41,12 @@ function boot({ saved = null, valid = false, authApi = '/local-access', redeemed
         '/local-access/api/verify-code': redeemedToken ? { token: redeemedToken } : { error: 'invalid_code' },
       }
       assert.ok(url in responses, 'Unexpected request: ' + url)
-      return { ok: true, json: async () => responses[url] }
+      if (url === '/local-access/api/verify-code' && redeemedToken) expirePrices = false
+      return { ok: !(expirePrices && url === '/api/prices'), status: expirePrices && url === '/api/prices' ? 401 : 200, json: async () => responses[url] }
     },
   })
   vm.runInContext(script, context)
-  return { element, storage, timers, requests, errors, context }
+  return { element, storage, timers, requests, errors, context, setFetch(fn) { context.fetch = fn } }
 }
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 const snapshot = JSON.stringify({ version: 1, mock: false, prices: {
@@ -132,6 +133,47 @@ test('valid saved session retains the normal intro and skips code entry', async 
   assert.deepEqual(app.errors, [])
 })
 
+test('expired session during polling opens one gate and resumes without replaying mutations', async () => {
+  const app = boot({ saved: 'valid-test-token', valid: true, expirePrices: true, redeemedToken: 'replacement-token' })
+  await settle()
+  assert.equal(app.element('#accessGate').classList.contains('hide'), false)
+  assert.equal(app.storage.has('retocker.access.alerts.v1'), false)
+  app.element('#accessCode').value = '123456'
+  await app.element('#accessForm').onsubmit({ preventDefault() {} }); await settle()
+  assert.equal(app.element('#accessGate').classList.contains('hide'), true)
+  assert.equal(app.storage.get('retocker.access.alerts.v1'), 'replacement-token')
+  assert.equal(app.requests.filter(u => u === '/local-access/api/verify-code').length, 1)
+  assert.deepEqual(app.errors, [])
+})
+
+test('recovery refreshes the active list and reconciles revoked selected symbol without mutation replay', async () => {
+  const app=boot({saved:'valid-test-token',valid:true,redeemedToken:'replacement-token'})
+  await settle()
+  vm.runInContext("sym='XAUUSD'; curTab='alerts'",app.context)
+  let listReads=0,mutations=0
+  app.setFetch(async(url,o={})=>{
+    if(o.method&&o.method!=='GET')mutations++
+    if(url==='/api/config')return {ok:true,status:200,json:async()=>({authRequired:true,authApi:'/local-access',symbols:{EURUSD:{digits:5,pip:.0001}}})}
+    if(url==='/api/alerts'){listReads++;return {ok:true,status:200,json:async()=>[]}}
+    return {ok:true,status:200,json:async()=>url.includes('verify-code')?{token:'replacement-token'}:{}}
+  })
+  vm.runInContext('recoverAccess()',app.context);await settle()
+  app.element('#accessCode').value='123456';await app.element('#accessForm').onsubmit({preventDefault(){}});await settle()
+  assert.equal(vm.runInContext('sym',app.context),'EURUSD');assert.equal(listReads,1)
+  assert.equal(mutations,1,'Only code redemption, no replay of previous mutation')
+  assert.equal(app.element('#accessGate').classList.contains('hide'),true)
+})
+test('failed configuration refresh reopens login visibly and permits a later successful recovery',async()=>{
+  const app=boot({saved:'valid-test-token',valid:true});await settle()
+  let configFails=true
+  app.setFetch(async url=>({ok:!(url==='/api/config'&&configFails),status:url==='/api/config'&&configFails?503:200,json:async()=>url==='/api/config'?(configFails?{error:'unavailable'}:{authRequired:true,authApi:'/local-access',symbols:{EURUSD:{digits:5,pip:.0001}}}):url.includes('verify-code')?{token:'replacement-token'}:{}}))
+  vm.runInContext('recoverAccess()',app.context);await settle()
+  app.element('#accessCode').value='123456';await app.element('#accessForm').onsubmit({preventDefault(){}});await settle()
+  assert.equal(app.element('#accessGate').classList.contains('hide'),false)
+  assert.match(app.element('#accessStatus').textContent,/Could not refresh/)
+  configFails=false;app.element('#accessCode').value='123456';await app.element('#accessForm').onsubmit({preventDefault(){}});await settle()
+  assert.equal(app.element('#accessGate').classList.contains('hide'),true)
+})
 test('missing access configuration is not hidden behind the splash', async () => {
   const app = boot({ authApi: '' })
   await settle()

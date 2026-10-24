@@ -17,6 +17,7 @@ const SECRET='artificial-signing-secret-01234567890123456789',WEBHOOK='artificia
 const env={ADMIN_CHAT_ID:'99999',MONITOR_ALERTS:'false',BOT_TOKEN:BOT,ACCESS_SIGNING_SECRET:SECRET,TELEGRAM_WEBHOOK_SECRET:WEBHOOK,OANDA_TOKEN:'artificial-oanda',OANDA_ACCOUNT:'test-account',PRICE_SOURCE:'oanda',OANDA_ENV:'practice',OANDA_SIDE:'bid',REQUIRE_ACCESS:'true',WEBAPP_URL:'https://alerts.test',AUTH_API_URL:'https://access.test',STREAM_WINDOW_SECONDS:'2'}
 const initial=()=>({...emptyMain(),alerts:[{id:1,userId:uid,symbol:'EURUSD',dir:'above',level:9,status:'active',createdAt:1}],seq:30,owned:{[uid]:['XAUUSD','XAGUSD','GER40','DXY']},orders:{old:{status:'approved',userId:uid}},migrationMarker:'preserve',resetV2:true})
 const sign=(user=uid,project='alerts',extra={})=>{const b=Buffer.from(JSON.stringify({sub:user,project,exp:Date.now()+600000,...extra})).toString('base64url');return b+'.'+createHmac('sha256',SECRET).update(b).digest('hex')}
+let telegramHold=null, telegramHeld=false
 let mf,sql,telegram=[],botName='artificial_alerts_bot',rejectStream=false,rejectTelegram=false,stale=false,closed=false,capitalCalls=0,candles=[],news=[],accessToken=null,streamStarts=0
 const persist=mkdtempSync(join(tmpdir(),'alerts-stream-test-')),streams=new Map(),encoder=new TextEncoder()
 const quote=(instrument='EUR_USD',value=1.2)=>({type:'PRICE',instrument,time:new Date(Date.now()-(stale?120000:0)).toISOString(),tradeable:!closed,bids:[{price:String(value)}],asks:[{price:String(value+.0002)}]})
@@ -26,6 +27,7 @@ async function outbound(req){
  const u=new URL(req.url)
  if(u.hostname==='api.telegram.org'){
   assert.ok(u.pathname.startsWith('/bot'+BOT+'/'));const method=u.pathname.split('/').at(-1),payload=await req.json();telegram.push({method,payload})
+  if(telegramHold&&method==='sendMessage'&&payload.text?.startsWith('Price alerts for')){telegramHeld=true;await telegramHold}
   if(rejectTelegram)return Response.json({ok:false},{status:502})
   return Response.json({ok:true,result:method==='getMe'?{username:botName}:method==='getWebhookInfo'?{url:'https://alerts.test/telegram/webhook'}:true})
  }
@@ -46,10 +48,10 @@ async function outbound(req){
  if(u.hostname==='demo-api-capital.backend-capital.com'){
   capitalCalls++
   if(u.pathname.endsWith('/session'))return Response.json({}, {headers:{cst:'artificial-cst','x-security-token':'artificial-sec'}})
-  return Response.json({marketDetails:['GOLD','DE40','SILVER'].map(epic=>({instrument:{epic},snapshot:{bid:100,offer:101,marketStatus:'TRADEABLE'}}))})
+  return Response.json({marketDetails:['GOLD','DE40','SILVER'].map(epic=>({instrument:{epic},snapshot:{bid:100,offer:101,marketStatus:'TRADEABLE',updateTimeUTC:new Date(Date.now()).toISOString()}}))})
  }
  if(['nfs.faireconomy.media','cdn-nfs.faireconomy.media'].includes(u.hostname))return Response.json(news)
- if(u.hostname==='access.test'){assert.equal(u.pathname,'/api/verify-code');assert.equal((await req.json()).project,'alerts');return Response.json({ok:true,token:accessToken||sign()})}
+ if(u.hostname==='access.test'){assert.equal(u.pathname,'/api/verify-code');assert.equal((await req.json()).project,'alerts');const client=req.headers.get('x-access-client'),at=req.headers.get('x-access-client-time');assert.match(client,/^[a-f0-9]{64}$/);assert.equal(req.headers.get('x-access-client-signature'),createHmac('sha256',SECRET).update(`alerts-client:${at}:${client}`).digest('hex'));return Response.json({ok:true,token:accessToken||sign()})}
  throw new Error('No live network permitted: '+u.hostname+u.pathname)
 }
 async function boot(extra={}){
@@ -121,6 +123,21 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   assert.equal(telegram.filter(x=>x.payload?.text?.includes('ARTIFICIAL BRIEF CROSSING')).length,1)
   assert.equal((await getMain()).alerts.find(x=>x.id===a.data.id).status,'fired')
   emit(1.6);await new Promise(r=>setTimeout(r,100));assert.equal(telegram.filter(x=>x.payload?.text?.includes('ARTIFICIAL BRIEF CROSSING')).length,1)
+ })
+ test('slow webhook cannot block a brief crossing or API, duplicate webhook stays deduplicated',async()=>{
+  const a=await api('alerts',{symbol:'EURUSD',dir:'above',level:1.7,note:'SLOW WEBHOOK CROSSING'},'POST')
+  let release;telegramHold=new Promise(r=>release=r);telegramHeld=false
+  const update={update_id:900,message:{chat:{id:Number(uid),type:'private'},from:{id:Number(uid)},text:'/start'}}
+  const first=request('/telegram/webhook',update,{'x-telegram-bot-api-secret-token':WEBHOOK})
+  let duplicate
+  try {
+   await waitFor(()=>telegramHeld);duplicate=request('/telegram/webhook',update,{'x-telegram-bot-api-secret-token':WEBHOOK})
+   await waitFor(()=>streams.size>0);emit(1.8);emit(1.2)
+   await waitFor(async()=>(await getMain()).alerts.find(x=>x.id===a.data.id)?.status==='fired')
+   assert.equal((await api('prices')).status,200)
+  } finally {release();telegramHold=null;await first;if(duplicate)assert.equal((await duplicate).status,200)}
+  await waitFor(()=>telegram.some(x=>x.payload?.text?.includes('SLOW WEBHOOK CROSSING')))
+  assert.equal(telegram.filter(x=>x.payload?.text?.includes('SLOW WEBHOOK CROSSING')).length,1)
  })
  test('incoming ticks do not checkpoint prices or rewrite database on each update',async()=>{
   await sql.exec('CREATE TABLE audit_write(n INTEGER)');await sql.exec("CREATE TRIGGER audit_main AFTER UPDATE ON alerts_kv WHEN NEW.k='tg-alerts-db' BEGIN INSERT INTO audit_write VALUES(1); END")
@@ -225,11 +242,31 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   const {db,store}=local();try{await store.command(['SET','tg-alerts-db','{bad']);await assert.rejects(createEngine({...env,LOCAL_STORE:store,FETCH:mockFetch}));assert.equal(await store.command(['GET','tg-alerts-db']),'{bad')}finally{db.close()}
  })
 
+ test('slow background news and Telegram sends cannot hold price processing',async()=>{
+  const {db,store}=local({main:{...emptyMain(),alerts:[{id:1,userId:uid,symbol:'EURUSD',dir:'above',level:1.5,status:'active'}],events:[{id:2,userId:uid,text:'slow pending',delivery:'pending'}],seq:3}})
+  let releaseNews,releaseTelegram,newsStarted=false,telegramStarted=false
+  const newsWait=new Promise(r=>releaseNews=r),telegramWait=new Promise(r=>releaseTelegram=r)
+  const fetch=async(i,o)=>{const u=new URL(i);if(u.hostname.includes('faireconomy')){newsStarted=true;await newsWait;return Response.json([])}if(u.hostname==='api.telegram.org'){telegramStarted=true;await telegramWait;return mockFetch(i,o)}if(u.pathname.endsWith('/pricing'))return Response.json({prices:[quote('EUR_USD',1.6)]});return mockFetch(i,o)}
+  let background,delivery
+  try{
+   const core=await createEngine({...env,LOCAL_STORE:store,FETCH:fetch})
+   delivery=core.flushEvents();for(let i=0;i<20&&!telegramStarted;i++)await new Promise(r=>setImmediate(r))
+   assert.equal(telegramStarted,true)
+   await core.refreshQuotes()
+   assert.equal(JSON.parse(await store.command(['GET','tg-alerts-db'])).alerts[0].status,'fired')
+   releaseTelegram();await delivery
+   background=core.housekeeping();for(let i=0;i<20&&!newsStarted;i++)await new Promise(r=>setImmediate(r))
+   assert.equal(newsStarted,true)
+   const response=await core.http(new Request('https://local/api/prices',{headers:{'x-access-token':sign()}}))
+   assert.equal((await response.json()).EURUSD.price,1.6)
+  }finally{releaseNews();releaseTelegram();await Promise.allSettled([background,delivery]);db.close()}
+ })
+
  test('Capital preserves previous polling quote side, offsets and paid-price trigger',async()=>{
   const {db,store}=local({main:{...initial(),alerts:[{id:1,userId:uid,symbol:'XAUUSD',dir:'above',level:101,status:'active'}]}})
   try{
    const core=await createEngine({...env,LOCAL_STORE:store,FETCH:mockFetch,CAPITAL_API_KEY:'artificial',CAPITAL_IDENTIFIER:'artificial',CAPITAL_PASSWORD:'artificial',CAPITAL_SIDE:'ask',OFFSET_XAUUSD:'2'})
-   const before=telegram.length;await core.capital();const d=JSON.parse(await store.command(['GET','tg-alerts-db']));assert.equal(d.alerts[0].firedPrice,103);assert.equal(d.alerts[0].status,'fired');assert.equal(telegram.slice(before).filter(x=>x.method==='sendMessage').length,1);assert.equal(core.feedStatus().capitalIntervalMs,1500)
+   const before=telegram.length;await core.capital();await core.flushEvents();const d=JSON.parse(await store.command(['GET','tg-alerts-db']));assert.equal(d.alerts[0].firedPrice,103);assert.equal(d.alerts[0].status,'fired');assert.equal(telegram.slice(before).filter(x=>x.method==='sendMessage').length,1);assert.equal(core.feedStatus().capitalIntervalMs,1500)
   }finally{db.close()}
  })
  test('event retention never deletes a deferred notification',async()=>{

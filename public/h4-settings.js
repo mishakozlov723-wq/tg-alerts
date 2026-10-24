@@ -4,7 +4,8 @@
   let prefs = null, status = null, busy = false, loading = false, statusPerf = 0, error = ''
   const el = (id) => document.getElementById(id)
   async function request(url, options = {}) {
-    const response = await fetch(url, { ...options, headers: { ...H, ...options.headers } })
+    const response = await fetch(url, { ...options, headers: { ...H, ...options.headers }, signal: AbortSignal.timeout(15000) })
+    if (response.status === 401) recoverAccess()
     const data = await response.json()
     if (!response.ok || data.error) throw new Error(data.error || 'Cannot reach the server. Please retry.')
     return data

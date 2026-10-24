@@ -133,7 +133,8 @@
   function update(q = quote()) {
     if (!active || !series) return
     const fresh = isFresh(q)
-    $('#chartFresh').textContent = [!fresh ? 'Last price' : '', historyStale || Date.now()-loadedAt > 90000 ? 'Cached history' : ''].filter(Boolean).join(' · ')
+    const state = window.quoteState(symbol, q)
+    $('#chartFresh').textContent = [state === 'market closed' ? 'Market closed' : !fresh ? 'Last price · ' + state : '', historyStale || Date.now()-loadedAt > 90000 ? 'Cached history' : ''].filter(Boolean).join(' · ')
     if (!fresh || !rows.length || q.dataTs <= lastLive || q.dataTs < loadedAt) return
     lastLive = q.dataTs
     const last = rows.at(-1), ts = q.dataTs / 1000

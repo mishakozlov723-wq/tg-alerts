@@ -229,7 +229,7 @@ async function handle(req,env){
 function frame() {
   for (const k in shown) if (!cfg.symbols[k]) delete shown[k]
   for (const k in prices) if (cfg.symbols[k] && Number.isFinite(prices[k].price)) shown[k] = prices[k].price
-  const state = s => { const q = prices[s]; return !q ? 'loading quote' : q.stale || !q.tradeable || Date.now() - q.observedAt > 30000 || Date.now() - q.dataTs > 30000 ? 'last quote · reconnecting / market closed' : 'streaming' }
+  const state = s => window.quoteState(s, prices[s])
   $('#price').textContent = fmt(sym, shown[sym])
   $('#psub').textContent = sym + ' · ' + state(sym)
   document.querySelectorAll('.asset').forEach(t => { const s=t.dataset.s, stale=state(s) !== 'streaming'; t.querySelector('span').textContent = fmt(s, shown[s]) + (shown[s] != null && stale ? ' · last' : ''); t.title = state(s); t.dataset.stale = String(stale) })

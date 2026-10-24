@@ -60,7 +60,7 @@ export function createQuoteFeed(env){
   const item=Object.entries(SYMBOLS).find(([,c])=>c.oanda===p.instrument)
   if(item&&!(item[1].premium&&capOn)){
    const [s,c]=item;trade[s]=valid;const side=env.OANDA_SIDE||'bid',v=side==='ask'?ask:side==='mid'?(bid+ask)/2:bid
-   await setPrice(s,v+(c.offset||0),valid?onTick:null,{dataTs,tradeable:valid,spreadPips:(ask-bid)/c.pip})
+   await setPrice(s,v+(c.offset||0),valid?onTick:null,{dataTs,tradeable:valid,marketStatus:p.tradeable===false?'CLOSED':p.tradeable===true?'TRADEABLE':'UNKNOWN',spreadPips:(ask-bid)/c.pip})
   }
   if(!capOn&&PAIRS.includes(p.instrument)&&PAIRS.every(s=>Number.isFinite(mids[s]))){
    const oldest=Math.min(...PAIRS.map(s=>times[s]));trade.DXY=PAIRS.every(s=>trade[s])&&Date.now()-oldest<=30000
@@ -143,7 +143,7 @@ export function createQuoteFeed(env){
           if(dataTs<(prices[s]?.dataTs||0)){diagnostic.reason='older_than_cached';return}
           const valid=snapshot.marketStatus==='TRADEABLE'&&Date.now()-dataTs<=30000
           trade[s]=valid
-          await setPrice(s,v+(c.offset||0),valid?onTick:null,{dataTs,tradeable:valid})
+          await setPrice(s,v+(c.offset||0),valid?onTick:null,{dataTs,tradeable:valid,marketStatus:snapshot.marketStatus||'UNKNOWN'})
           diagnostic.stored=true;diagnostic.reason=valid?'fresh':snapshot.marketStatus==='TRADEABLE'?'stale':'market_closed'
         })
       }

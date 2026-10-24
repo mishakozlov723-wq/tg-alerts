@@ -146,6 +146,8 @@ body.ready .rise{opacity:1;transform:none}
 .live-controls{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}.live-controls .ed{padding:0 12px;height:34px;font-size:10px}
 #p-live button:disabled{opacity:.35;cursor:default}.live-plus:active{border-color:var(--txt)}
 .tabs button{font-size:9px;letter-spacing:.08em}
+
+.alert-filters{display:flex;gap:10px;margin:-10px 0 10px}.alert-filters label{flex:1;min-width:0;font-size:10px;color:var(--mut)}.alert-filters select{display:block;width:100%;min-height:42px;margin-top:6px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--txt);font:inherit;font-size:12px;color-scheme:dark}.alert-filter-count{font-size:11px;color:var(--mut);margin-bottom:16px}
 </style>
 </head>
 <body>
@@ -189,6 +191,11 @@ body.ready .rise{opacity:1;transform:none}
   <section id="p-alerts" class="hide">
     <div class="eyebrow">Alerts</div>
     <h1>Your levels.</h1>
+    <div class="alert-filters">
+      <label>Status<select id="alertFilterStatus"><option value="all">All statuses</option><option value="active">Active</option><option value="fired">Triggered</option><option value="paused">Paused</option></select></label>
+      <label>Asset<select id="alertFilterAsset"><option value="all">All assets</option></select></label>
+    </div>
+    <div id="alertFilterCount" class="alert-filter-count" aria-live="polite"></div>
     <div id="alertsStatus" role="status" class="note"></div>
     <div id="alist"></div>
   </section>
@@ -243,6 +250,7 @@ body.ready .rise{opacity:1;transform:none}
 
 <link rel="stylesheet" href="/price-chart.css">
 <script src="/lightweight-charts-5.0.9.js"></script>
+<script src="/quote-state.js"></script>
 <script src="/price-chart.js"></script>
 <script src="/intro.js"></script>
 <script>
@@ -363,7 +371,7 @@ function renderTiles() {
     `<button class="asset ${s === sym ? 'on' : ''}" data-s="${s}"><b>${s}</b><span>${fmt(s, shown[s])}</span></button>`).join('')
   $('#tiles').querySelectorAll('.asset').forEach((t) => t.onclick = () => { sym = t.dataset.s; renderTiles(); renderPrice(); renderChips(); $('#level').value = ''; window.PriceChart?.select(sym) })
 }
-function renderPrice() { $('#price').textContent = fmt(sym, shown[sym]); $('#psub').textContent = sym + ' · live' }
+function renderPrice() { $('#price').textContent = fmt(sym, shown[sym]); $('#psub').textContent = sym + ' · ' + window.quoteState(sym, prices[sym]) }
 // smooth count to a new value in the Price level field
 let levelAnim = 0
 function animateLevel(target, dur = 2200, clearAtEnd = false) {
@@ -459,8 +467,18 @@ async function loadAlerts() {
     if (request === alertsRequest) $('#alertsStatus').textContent = 'Could not load alerts. Existing levels and drafts are kept. Reopen this tab to retry.'
   }
 }
+function filterAlerts(list, status, asset) {
+  return list.filter(a => (status === 'all' || a.status === status) && (asset === 'all' || a.symbol === asset))
+}
+$('#alertFilterStatus').onchange = () => renderAlerts()
+$('#alertFilterAsset').onchange = () => renderAlerts()
 function renderAlerts() {
-  const list = alertsCache
+  const assetFilter = $('#alertFilterAsset'), previous = assetFilter.value
+  const assets = [...new Set([...Object.keys(cfg?.symbols || {}), ...alertsCache.map(a => a.symbol)])].sort()
+  assetFilter.replaceChildren(new Option('All assets', 'all'), ...assets.map(s => new Option(s, s)))
+  assetFilter.value = assets.includes(previous) ? previous : 'all'
+  const list = filterAlerts(alertsCache, $('#alertFilterStatus').value, assetFilter.value)
+  $('#alertFilterCount').textContent = `Showing ${list.length} of ${alertsCache.length}`
   const focused = document.activeElement?.id, selection = document.activeElement?.selectionStart
   $('#alist').innerHTML = list.length ? list.map((a) => `
     <div class="item ${a.status === 'active' ? '' : 'done'}" data-id="${a.id}"><div>
@@ -468,7 +486,7 @@ function renderAlerts() {
       <div class="t" class="num" style="font-weight:200;font-size:26px;margin-top:2px">${a.level}</div>
       ${a.note ? `<div class="note">${esc(a.note)}</div>` : ''}
       <small>${a.status === 'active' ? 'Active' : a.status === 'paused' ? 'Paused · access revoked' : 'Triggered ' + new Date(a.firedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' at ' + a.firedPrice}</small></div>
-      <div class="acts">${a.status === 'active' ? `<button class="ed" data-id="${a.id}">Edit</button>` : ''}<button class="x" data-id="${a.id}" aria-label="Delete alert">✕</button></div></div>`).join('') : '<div class="empty">No alerts yet.</div>'
+      <div class="acts">${a.status === 'active' ? `<button class="ed" data-id="${a.id}">Edit</button>` : ''}<button class="x" data-id="${a.id}" aria-label="Delete alert">✕</button></div></div>`).join('') : `<div class="empty">${alertsCache.length ? 'No alerts match these filters.' : 'No alerts yet.'}</div>`
   $('#alist').querySelectorAll('.x').forEach((b) => b.onclick = async () => {
     try {
       const result = await api('/api/alerts/' + b.dataset.id, { method: 'DELETE' })

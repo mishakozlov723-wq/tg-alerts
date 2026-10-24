@@ -299,7 +299,7 @@ const tg = async (method, payload, ms = 15000) => {
   })
   const data = await r.json()
   if (!r.ok || !data.ok) {
-    const e = new Error('Telegram delivery rejected'); e.definite = true; e.telegramCode = Number(data.error_code || r.status)
+    const e = new Error('Telegram delivery rejected'); e.definite = true; e.telegramCode = Number(data.error_code || r.status); e.telegramDescription = String(data.description || '')
     // Only a structured rejection proves that sendMessage was not accepted.
     // An unstructured proxy error or a network timeout remains ambiguous.
     e.retrySafe = data.ok === false && (r.status === 429 || data.error_code === 429 || r.status >= 500 || data.error_code >= 500)
@@ -523,6 +523,9 @@ async function handleUpdate(u) {
   if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
   if (await userAdmin.command(m)) return
   const uid = String(m.from.id), txt = m.text.trim()
+  if (/^\/emoji_test(?:@\w+)?$/i.test(txt) && monitorAdmin && uid === monitorAdmin && String(m.chat.id) === monitorAdmin) {
+    return alertIcons.test(m.chat.id)
+  }
   const statusCommand = txt.match(/^\/status(?:@\w+)?(?:\s+(all|quotes|news|delivery|h4|live|scheduler|access|logs))?$/i)
   if (statusCommand) {
     if (!monitorAdmin || uid !== monitorAdmin || String(m.chat.id) !== monitorAdmin) return

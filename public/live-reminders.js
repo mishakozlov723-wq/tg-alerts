@@ -39,7 +39,7 @@ function renderList() {
       box.append(last)
     }
     const actions = document.createElement('div'); actions.className = 'live-controls'
-    const add = (text, handler) => { const b = document.createElement('button'); b.className = 'ed'; b.type = 'button'; b.textContent = text; b.disabled = busy || uncertain; b.onclick = handler; actions.append(b) }
+    const add = (text, handler) => { const b = document.createElement('button'); b.className = 'ed'; b.type = 'button'; b.textContent = text; b.dataset.icon = text; b.disabled = busy || uncertain; b.onclick = handler; actions.append(b) }
     if (r.next) add(r.enabled ? 'Pause' : 'Resume', () => mutate(r, 'PATCH', { enabled: !r.enabled }))
     add('Edit', () => open(r))
     add('Delete', () => { if (confirm('Delete this reminder?')) mutate(r, 'DELETE') })

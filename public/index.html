@@ -223,7 +223,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
     <form id="liveForm" class="hide">
       <div class="field"><label for="liveText">Reminder</label><textarea id="liveText" enterkeyhint="done" rows="2" maxlength="500" placeholder="Take the second phone" required></textarea></div>
       <div class="live-date-zone"><div class="field"><label for="liveDate">Start date</label><input id="liveDate" type="date" required></div><div class="field"><label for="liveZone">Timezone</label><select id="liveZone" required></select></div></div>
-      <div class="eyebrow lbl">Time</div><div id="liveTimes"></div><button id="liveAddTime" class="ed" type="button">+ Time</button>
+      <div class="eyebrow lbl">Time</div><div id="liveTimes"></div><button id="liveAddTime" class="ed" type="button">Time</button>
       <div class="eyebrow lbl" style="margin-top:28px">Repeat</div><div class="opt" id="liveRepeat"></div>
       <div class="field hide" id="liveCountField"><label for="liveCount" id="liveCountLabel">Days</label><input id="liveCount" type="number" min="1" max="90" step="1" value="2" required></div>
       <div id="liveSummary" role="status"></div>
@@ -242,7 +242,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
     <div class="h4-group"><div class="eyebrow lbl">Notify before (min)</div><div class="opt" id="h4Lead"></div></div>
     <div class="setting-row"><div><b>At candle close</b></div><button id="h4AtClose" class="switch" type="button" role="switch" aria-checked="true" aria-label="Notify at candle close" disabled></button></div>
     <div class="h4-group"><div class="eyebrow lbl">Next close</div><div id="h4Schedule"></div></div>
-    <details class="chart-credits-settings"><summary>Chart credits</summary><div class="chart-credit">TradingView Lightweight Charts™ · Copyright (с) 2025 <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView, Inc.</a> · <a href="/lightweight-charts-LICENSE.txt">Apache 2.0</a></div></details>
+    <details class="chart-credits-settings"><summary>Credits</summary><div class="chart-credit">TradingView Lightweight Charts™ · Copyright (с) 2025 <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView, Inc.</a> · <a href="/lightweight-charts-LICENSE.txt">Apache 2.0</a></div><div class="chart-credit">Icons by <a href="https://hugeicons.com/" target="_blank" rel="noopener noreferrer">Hugeicons</a> · <a href="/hugeicons-LICENSE.txt">MIT license</a></div></details>
   </section>
 </div>
 
@@ -260,6 +260,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
 <script src="/quote-state.js"></script>
 <script src="/price-chart.js"></script>
 <link rel="stylesheet" href="/platform-controls.css">
+<link rel="stylesheet" href="/hugeicons.css">
 <script defer src="/platform-controls.js"></script>
 <script src="/intro.js"></script>
 <script>

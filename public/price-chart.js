@@ -2,7 +2,7 @@
 (() => {
   const $ = s => document.querySelector(s)
   const palette = { light: '#d4d4d0', dark: '#666662', label: '#bcbcb7', grid: '#272727' }
-  let chart, series, api, getQuote, symbol, tf = 'M15', rows = [], hasMore = false, busy = false, generation = 0
+  let chart, series, api, getQuote, symbol, tf = 'H4', rows = [], hasMore = false, busy = false, generation = 0
   let chosen, draft, lines = [], alerts = [], active = false, loadedAt = 0, lastLive = 0, listVersion = 0, historyStale = true
   let candidate = null, holding = false, hold, start, axisDrag, touchActive = false, multiTouch = false, scaleBase = null, candidateTime = null, manualAsset = null, draftDrag = false, mouseHover = false
   function draftHit(p) {
@@ -175,6 +175,7 @@
   }
   function init() {
     if (chart) return
+    $('#chartFrames').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tf === tf))
     $('#manualToggle').onclick = () => manual($('#manualToggle').getAttribute('aria-expanded') !== 'true')
     const lib = window.LightweightCharts
     if (!lib) throw new Error('Chart library unavailable')

@@ -16,6 +16,19 @@ export function createQuoteFeed(env){
  }
  const prices={},feedStatus={missing:['XAUUSD','GER40','XAGUSD']},trade={},errors={},mids={},times={}
  const capOn=!!(env.CAPITAL_API_KEY&&env.CAPITAL_IDENTIFIER&&env.CAPITAL_PASSWORD)
+ // Public health diagnostics: fixed metadata and validated provider error codes only.
+ // Never expose response bodies, exception messages, credentials or session headers.
+ const capitalDiagnostics={version:1,configured:capOn,environment:env.CAPITAL_ENV==='live'?'live':'demo',stage:capOn?'not_attempted':'unconfigured',httpStatus:null,errorCode:null,lastAttemptAt:null,lastSuccessAt:null}
+ async function capitalHttpError(response,stage){
+  let code=null
+  try{
+   const raw=(await response.json())?.errorCode
+   const secrets=[env.CAPITAL_API_KEY,env.CAPITAL_IDENTIFIER,env.CAPITAL_PASSWORD,cst,sec].filter(v=>typeof v==='string'&&v.length)
+   if(typeof raw==='string'&&/^error\.[a-z0-9_.-]{1,100}$/i.test(raw)&&!secrets.some(v=>raw.includes(v)))code=raw
+  }catch{}
+  capitalDiagnostics.stage=stage;capitalDiagnostics.httpStatus=response.status;capitalDiagnostics.errorCode=code||'http_error'
+  return new Error('Capital_request_failed')
+ }
  const host=env.OANDA_ENV==='live'?'https://api-fxtrade.oanda.com':'https://api-fxpractice.oanda.com'
  const streamHost=env.OANDA_ENV==='live'?'https://stream-fxtrade.oanda.com':'https://stream-fxpractice.oanda.com'
  let account=env.OANDA_ACCOUNT,discovered=false,extra=[],cst='',sec='',loginAt=0,capNext=0,capFails=0,lastMessage=0,connected=false,source='unavailable'
@@ -106,18 +119,25 @@ export function createQuoteFeed(env){
   async function pollCapital(onTick, dispatch=fn=>fn()) {
     if(!capOn || Date.now()<capNext)return
     const base=env.CAPITAL_ENV==='live'?'https://api-capital.backend-capital.com':'https://demo-api-capital.backend-capital.com'
+    capitalDiagnostics.lastAttemptAt=Date.now();capitalDiagnostics.httpStatus=null;capitalDiagnostics.errorCode=null
     try {
       if(!cst || Date.now()-loginAt>8*60000) {
+        capitalDiagnostics.stage='login'
         const r=await fetch(base+'/api/v1/session',{method:'POST',headers:{'X-CAP-API-KEY':env.CAPITAL_API_KEY,'content-type':'application/json'},body:JSON.stringify({identifier:env.CAPITAL_IDENTIFIER,password:env.CAPITAL_PASSWORD,encryptedPassword:false}),signal:AbortSignal.timeout(8000)})
-        if(!r.ok)throw new Error(`Capital login HTTP ${r.status}`)
+        capitalDiagnostics.httpStatus=r.status
+        if(!r.ok)throw await capitalHttpError(r,'login')
         cst=r.headers.get('cst')||'';sec=r.headers.get('x-security-token')||'';loginAt=Date.now()
-        if(!cst||!sec)throw new Error('Capital session unavailable')
+        if(!cst||!sec){capitalDiagnostics.errorCode='session_headers_missing';throw new Error('Capital session unavailable')}
       }
       const items=Object.entries(SYMBOLS).filter(([,c])=>c.capital)
+      capitalDiagnostics.stage='markets';capitalDiagnostics.httpStatus=null
       const r=await fetch(base+'/api/v1/markets?epics='+encodeURIComponent(items.map(([,c])=>c.capital).join(',')),{headers:{CST:cst,'X-SECURITY-TOKEN':sec},signal:AbortSignal.timeout(8000)})
+      capitalDiagnostics.httpStatus=r.status
       if(r.status===401)cst=''
-      if(!r.ok)throw new Error(`Capital markets HTTP ${r.status}`)
+      if(!r.ok)throw await capitalHttpError(r,'markets')
+      capitalDiagnostics.stage='decode_markets'
       const d=await r.json(),seen=[]
+      capitalDiagnostics.stage='process_markets'
       for(const m of d.marketDetails||[]) {
         const item=items.find(([,c])=>c.capital===(m.instrument?.epic||m.epic));if(!item)continue
         const [s,c]=item,bid=Number(m.snapshot?.bid),ask=Number(m.snapshot?.offer)
@@ -137,12 +157,15 @@ export function createQuoteFeed(env){
       }
       unavailable(items.map(([s])=>s),items.filter(([s])=>!seen.includes(s)).map(([s])=>s))
       capFails=0;errors.capital=null
-    } catch(e) { capFails++;capNext=Date.now()+Math.min(300000,10000*2**Math.min(capFails,5));errors.capital='Capital feed unavailable';throw e }
+      capitalDiagnostics.stage='ok';capitalDiagnostics.errorCode=null;capitalDiagnostics.lastSuccessAt=Date.now()
+    } catch(e) {
+      if(!capitalDiagnostics.errorCode)capitalDiagnostics.errorCode=e.retrySafe?'runtime_deferred':e.storageFailure?'storage_error':['TimeoutError','AbortError'].includes(e.name)?'request_aborted_or_timeout':capitalDiagnostics.stage==='decode_markets'?'invalid_json':capitalDiagnostics.stage==='process_markets'?'processing_error':'network_or_runtime_error'
+      capFails++;capNext=Date.now()+Math.min(300000,10000*2**Math.min(capFails,5));errors.capital='Capital feed unavailable';throw e }
   }
  return {SYMBOLS,prices,feedStatus,setPrice,stream,refresh,restore,checkpoint,capital:pollCapital,marketOpen,
   async probe(){await discover();const d=await get(`/v3/accounts/${encodeURIComponent(account)}/pricing?instruments=${encodeURIComponent(PAIRS.join(','))}`);if(!Array.isArray(d.prices)||!['EUR_USD','GBP_USD'].every(s=>d.prices.some(p=>p.instrument===s)))throw new Error('broker_prices_unavailable');await pollCapital(null);if(capOn&&errors.capital)throw new Error('Capital_feed_unavailable');return {oanda:true,capital:capOn}},
   tradeable:s=>trade[s]===true,
   fresh,
-  status:()=>({mode:'stream',source,connected,lastMessage,displayIntervalMs:1000,capitalIntervalMs:1500,pricing:{oandaEnvironment:env.OANDA_ENV||'practice',oandaSide:env.OANDA_SIDE||'bid',capitalSide:env.CAPITAL_SIDE||'mid',quotes:Object.fromEntries(['EURUSD','GBPUSD'].filter(s=>prices[s]).map(s=>[s,{receivedAgeMs:Date.now()-prices[s].observedAt,sourceAgeMs:Date.now()-prices[s].dataTs,spreadPips:Number(prices[s].spreadPips?.toFixed(3)),tradeable:prices[s].tradeable}]))},errors:{...errors},tradeable:{...trade}}),
+  status:()=>({mode:'stream',source,connected,lastMessage,displayIntervalMs:1000,capitalIntervalMs:1500,pricing:{oandaEnvironment:env.OANDA_ENV||'practice',oandaSide:env.OANDA_SIDE||'bid',capitalSide:env.CAPITAL_SIDE||'mid',quotes:Object.fromEntries(['EURUSD','GBPUSD'].filter(s=>prices[s]).map(s=>[s,{receivedAgeMs:Date.now()-prices[s].observedAt,sourceAgeMs:Date.now()-prices[s].dataTs,spreadPips:Number(prices[s].spreadPips?.toFixed(3)),tradeable:prices[s].tradeable}]))},errors:{...errors},capitalDiagnostics:{...capitalDiagnostics,nextRetryAt:capNext,consecutiveFailures:capFails},tradeable:{...trade}}),
  }
 }

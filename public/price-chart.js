@@ -26,9 +26,10 @@
     const price = series.coordinateToPrice(clamp(p.y, 1, $('#chartCanvas').clientHeight - 29))
     if (!Number.isFinite(price) || price <= 0) return
     candidate = price; paintDraft(price, 'Alert')
-    if (!$('#chartTicket').hidden) $('#chartPrice').value = price.toFixed(5)
+    if (!$('#chartTicket').hidden) $('#chartPrice').value = price.toFixed(digits())
     positionPlus()
   }
+  const digits = () => ({ DXY: 3, GER40: 1, XAUUSD: 2, XAGUSD: 3 }[symbol] ?? 5)
   const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
   function endHold() {
     clearTimeout(hold); start = null
@@ -62,7 +63,7 @@
   function selection(price, alert) {
     if (!Number.isFinite(price) || price <= 0) return
     chosen = alert || null; candidate = alert ? null : price
-    $('#chartPrice').value = price.toFixed(5)
+    $('#chartPrice').value = price.toFixed(digits())
     $('#chartTicket').hidden = false; $('#chartPlus').hidden = true
     $('#chartAdd').hidden = false; $('#chartAdd').textContent = 'Save alert'; $('#chartDelete').hidden = !chosen
     // Changes remain local until Save alert; retain chosen.id for PATCH.
@@ -73,7 +74,7 @@
     for (const line of lines) series.removePriceLine(line)
     lines = ownAlerts().map(a => series.createPriceLine({ price: a.level, color: palette.label, lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: `${a.dir === 'reach' ? 'Alert' : a.dir === 'above' ? '▲' : '▼'} #${a.id}` }))
     const select = $('#chartExisting'); select.replaceChildren(new Option('Select alert…', ''))
-    for (const a of ownAlerts()) select.add(new Option(`${a.dir === 'reach' ? '' : a.dir === 'above' ? '▲ ' : '▼ '}${Number(a.level).toFixed(5)} · #${a.id}`, String(a.id)))
+    for (const a of ownAlerts()) select.add(new Option(`${a.dir === 'reach' ? '' : a.dir === 'above' ? '▲ ' : '▼ '}${Number(a.level).toFixed(digits())} · #${a.id}`, String(a.id)))
     if (chosen && !ownAlerts().some(a => a.id === chosen.id)) clearSelection()
     if (chosen) {
       select.value = String(chosen.id)
@@ -151,7 +152,7 @@
     if (plus.hidden) return
     plus.style.top = `${clamp(y, 22, height - 22)}px`
     plus.style.right = `${chart.priceScale('right').width()}px`
-    plus.setAttribute('aria-label', `Add alert at ${candidate.toFixed(5)}`)
+    plus.setAttribute('aria-label', `Add alert at ${candidate.toFixed(digits())}`)
   }
   function moveCandidate(p, native = false) {
     if (!p || !rows.length) return
@@ -297,7 +298,7 @@
     $('#chartAdd').onclick = e => mutate(e.target, async () => {
       const value = $('#chartPrice').value.trim().replace(',','.'), level = Number(value)
       if (!/^\d+(?:\.\d+)?$/.test(value) || !Number.isFinite(level) || level <= 0) throw new Error('Enter a positive price')
-      await call(chosen ? '/api/alerts/'+chosen.id : '/api/alerts', { method:chosen ? 'PATCH' : 'POST', body:JSON.stringify({ symbol, level:Number(level.toFixed(5)) }) })
+      await call(chosen ? '/api/alerts/'+chosen.id : '/api/alerts', { method:chosen ? 'PATCH' : 'POST', body:JSON.stringify({ symbol, level:Number(level.toFixed(digits())) }) })
     })
     $('#chartDelete').onclick = e => { if (chosen) return mutate(e.target, () => call('/api/alerts/'+chosen.id, {method:'DELETE'})) }
     $('#chartFrames').querySelectorAll('button').forEach(b => b.onclick = () => {
@@ -313,7 +314,7 @@
     connect(options) { api=options.api; getQuote=options.getQuote },
     select(asset) {
       const changed = asset !== symbol
-      active = ['GBPUSD','EURUSD'].includes(asset); panel().hidden = !active
+      active = ['GBPUSD','EURUSD','DXY','GER40','XAUUSD','XAGUSD'].includes(asset); panel().hidden = !active
       // Tab navigation must not reset the user's expanded form; asset changes do.
       if (asset) {
         $('#manualToggle').hidden = !active
@@ -323,7 +324,7 @@
       if (!active) { generation++; touchActive = false; if (chart) clearSelection(); return }
       try {
         init()
-        if (changed) { symbol=asset; generation++; listVersion++; rows=[]; hasMore=false; lastLive=0; historyStale=true; clearSelection(); series.setData([]); paintAlerts(); reset(); status('Loading…') }
+        if (changed) { symbol=asset; series.applyOptions({ priceFormat: { type:'price', precision:digits(), minMove:10 ** -digits() } }); $('#chartPrice').step = String(10 ** -digits()); generation++; listVersion++; rows=[]; hasMore=false; lastLive=0; historyStale=true; clearSelection(); series.setData([]); paintAlerts(); reset(); status('Loading…') }
         $('#chartSymbol').textContent = asset
         history(); loadAlerts().catch(e=>status(e.message)); update(quote())
       } catch(e) { status(e.message) }

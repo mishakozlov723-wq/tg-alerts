@@ -23,7 +23,7 @@ const newsSource = createNews(env)
 const { getNews } = newsSource
 // Silver is a paid quote from Capital.com (epic can be changed with CAPITAL_EPIC_XAGUSD, shift with OFFSET_XAGUSD).
 if (!SYMBOLS.XAGUSD) SYMBOLS.XAGUSD = { label: 'Silver', premium: true, pip: 0.01, digits: 3, base: 50, capital: env.CAPITAL_EPIC_XAGUSD || 'SILVER', offset: Number(env.OFFSET_XAGUSD || 0), duka: ['xagusd'] }
-// DXY is a paid quote too (only EURUSD and GBPUSD are free). Its price is still computed from the OANDA pairs.
+// DXY stays paid; Capital supplies its price and chart when configured.
 SYMBOLS.DXY.premium = true
 
 const BOT_TOKEN = env.BOT_TOKEN || ''
@@ -43,6 +43,13 @@ const saved = await redis(['GET','tg-alerts-db'])
 if (saved === null) throw Object.assign(new Error('storage_not_initialized'), { status: 503 })
 let db = validateMain(JSON.parse(saved))
 quoteFeed.restore(await redis(['GET','tg-alerts:quotes:v1']))
+// A source switch must not look like a crossed price level. Rearm existing
+// reach alerts on the first fresh tick; preserve IDs, levels and ownership.
+if (env.CAPITAL_API_KEY && env.CAPITAL_IDENTIFIER && env.CAPITAL_PASSWORD && db.dxyPriceSource !== 'capital-v1') {
+  for (const a of db.alerts) if (a.symbol === 'DXY' && a.status === 'active' && a.dir === 'reach') delete a.referencePrice
+  db.dxyPriceSource = 'capital-v1'
+  await redis(['SET','tg-alerts-db',JSON.stringify(db)])
+}
 const save = async () => {
   try { await redis(['SET', 'tg-alerts-db', JSON.stringify(db)]) }
   catch (cause) { if (cause.name === 'AbortError') throw cause; const e = new Error('durable_storage_unavailable'); e.storageFailure = true; throw e }

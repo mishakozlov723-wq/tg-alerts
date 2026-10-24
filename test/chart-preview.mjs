@@ -6,11 +6,18 @@ import { createHmac } from 'node:crypto'
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare'
 import { createEngine } from '../cloudflare/core.mjs'
 import { createLocalStore, emptyMain } from '../cloudflare/storage.mjs'
-const db=new DatabaseSync(':memory:'),store=createLocalStore({sql:{exec:(q,...a)=>db.prepare(q).all(...a)},transactionSync:fn=>fn()});store.initialize({main:emptyMain()})
+const db=new DatabaseSync(':memory:'),store=createLocalStore({sql:{exec:(q,...a)=>db.prepare(q).all(...a)},transactionSync:fn=>fn()});store.initialize({main:{...emptyMain(),owned:{'12345':['DXY','GER40','XAUUSD','XAGUSD']}}})
 const secret='local-artificial-chart-key',payload=Buffer.from(JSON.stringify({sub:'12345',project:'alerts',exp:Date.now()+86400000})).toString('base64url'),token=payload+'.'+createHmac('sha256',secret).update(payload).digest('hex')
 let stale=false
 const source=async input=>{
  const u=new URL(input)
+ if(u.pathname.endsWith('/session'))return Response.json({}, {headers:{cst:'fixture','x-security-token':'fixture'}})
+ if(u.searchParams.has('searchTerm'))return Response.json({markets:[{epic:'DXY_FIXTURE',instrumentName:'US Dollar Index'}]})
+ if(u.pathname.includes('/prices/')) {
+  const step={MINUTE_15:900,HOUR:3600,HOUR_4:14400,DAY:86400}[u.searchParams.get('resolution')],count=Number(u.searchParams.get('max')),end=Math.floor((u.searchParams.has('to')?Date.parse(u.searchParams.get('to')+'Z'):Date.now())/1000/step)*step
+  return Response.json({prices:Array.from({length:count},(_,i)=>{const time=end-(count-1-i)*step,p=100+Math.sin(time/step/10)*.2;return {snapshotTimeUTC:new Date(time*1000).toISOString(),...Object.fromEntries([['openPrice',p],['highPrice',p+.08],['lowPrice',p-.06],['closePrice',p+.02]].map(([k,v])=>[k,{bid:v-.01,ask:v+.01}]))}})})
+ }
+ if(u.pathname.endsWith('/markets'))return Response.json({marketDetails:[{instrument:{epic:'DXY_FIXTURE'},snapshot:{bid:100,offer:100.02,marketStatus:'TRADEABLE',updateTimeUTC:new Date(Date.now()-(stale?120000:0)).toISOString()}}]})
  if(u.pathname.endsWith('/candles')){
   const tf=u.searchParams.get('granularity'),step={M15:900,H1:3600,H4:14400,D:86400}[tf],count=Number(u.searchParams.get('count')),end=Math.floor(Date.now()/1000/step)*step
   return Response.json({instrument:u.pathname.split('/')[3],granularity:tf,candles:Array.from({length:count},(_,i)=>{

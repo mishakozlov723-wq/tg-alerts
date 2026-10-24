@@ -1,3 +1,4 @@
+import { capitalClient, capitalInstrument } from './capital.mjs'
 // OANDA stream with bounded REST reconciliation and a periodic display cache.
 // Cached prices never dispatch alert ticks or acquire new timestamps on restore.
 export function dxyFormula(q) {
@@ -10,28 +11,18 @@ export function createQuoteFeed(env){
  const fetch=env.FETCH||globalThis.fetch
  const SYMBOLS={
   EURUSD:{pip:.0001,digits:5,oanda:'EUR_USD'},GBPUSD:{pip:.0001,digits:5,oanda:'GBP_USD'},DXY:{pip:.01,digits:3,premium:true},
-  XAUUSD:{label:'Gold',premium:true,pip:.1,digits:2,oanda:env.OANDA_XAUUSD||'XAU_USD',capital:env.CAPITAL_EPIC_XAUUSD||'GOLD',offset:Number(env.OFFSET_XAUUSD||0)},
-  GER40:{label:'GER40',premium:true,pip:1,digits:1,oanda:env.OANDA_GER40||'DE30_EUR',capital:env.CAPITAL_EPIC_GER40||'DE40',offset:Number(env.OFFSET_GER40||0)},
-  XAGUSD:{label:'Silver',premium:true,pip:.01,digits:3,capital:env.CAPITAL_EPIC_XAGUSD||'SILVER',offset:Number(env.OFFSET_XAGUSD||0)},
+  XAUUSD:{label:'Gold',premium:true,pip:.1,digits:2,oanda:env.OANDA_XAUUSD||'XAU_USD',capital:capitalInstrument(env,'XAUUSD'),offset:Number(env.OFFSET_XAUUSD||0)},
+  GER40:{label:'GER40',premium:true,pip:1,digits:1,oanda:env.OANDA_GER40||'DE30_EUR',capital:capitalInstrument(env,'GER40'),offset:Number(env.OFFSET_GER40||0)},
+  XAGUSD:{label:'Silver',premium:true,pip:.01,digits:3,capital:capitalInstrument(env,'XAGUSD'),offset:Number(env.OFFSET_XAGUSD||0)},
  }
  const prices={},feedStatus={missing:['XAUUSD','GER40','XAGUSD']},trade={},errors={},mids={},times={}
  const capOn=!!(env.CAPITAL_API_KEY&&env.CAPITAL_IDENTIFIER&&env.CAPITAL_PASSWORD)
  // Public health diagnostics: fixed metadata and validated provider error codes only.
  // Never expose response bodies, exception messages, credentials or session headers.
  const capitalDiagnostics={version:3,configured:capOn,environment:env.CAPITAL_ENV==='live'?'live':'demo',stage:capOn?'not_attempted':'unconfigured',httpStatus:null,errorCode:null,lastAttemptAt:null,lastSuccessAt:null}
- async function capitalHttpError(response,stage){
-  let code=null
-  try{
-   const raw=(await response.json())?.errorCode
-   const secrets=[env.CAPITAL_API_KEY,env.CAPITAL_IDENTIFIER,env.CAPITAL_PASSWORD,cst,sec].filter(v=>typeof v==='string'&&v.length)
-   if(typeof raw==='string'&&/^error\.[a-z0-9_.-]{1,100}$/i.test(raw)&&!secrets.some(v=>raw.includes(v)))code=raw
-  }catch{}
-  capitalDiagnostics.stage=stage;capitalDiagnostics.httpStatus=response.status;capitalDiagnostics.errorCode=code||'http_error'
-  return new Error('Capital_request_failed')
- }
  const host=env.OANDA_ENV==='live'?'https://api-fxtrade.oanda.com':'https://api-fxpractice.oanda.com'
  const streamHost=env.OANDA_ENV==='live'?'https://stream-fxtrade.oanda.com':'https://stream-fxpractice.oanda.com'
- let account=env.OANDA_ACCOUNT,discovered=false,extra=[],cst='',sec='',loginAt=0,capNext=0,capFails=0,lastMessage=0,connected=false,source='unavailable'
+ let account=env.OANDA_ACCOUNT,discovered=false,extra=[],capNext=0,capFails=0,lastMessage=0,connected=false,source='unavailable'
  let revision=0,savedRevision=0,nextRefresh=0
  const identity=JSON.stringify([env.OANDA_ENV||'practice',env.OANDA_ACCOUNT||'',env.OANDA_SIDE||'bid',capOn,env.CAPITAL_ENV||'demo',env.CAPITAL_SIDE||'mid',SYMBOLS])
  const fresh=s=>trade[s]===true&&!!prices[s]&&Date.now()-prices[s].observedAt<30000&&Date.now()-prices[s].dataTs<=30000
@@ -71,7 +62,7 @@ export function createQuoteFeed(env){
    const [s,c]=item;trade[s]=valid;const side=env.OANDA_SIDE||'bid',v=side==='ask'?ask:side==='mid'?(bid+ask)/2:bid
    await setPrice(s,v+(c.offset||0),valid?onTick:null,{dataTs,tradeable:valid,spreadPips:(ask-bid)/c.pip})
   }
-  if(PAIRS.includes(p.instrument)&&PAIRS.every(s=>Number.isFinite(mids[s]))){
+  if(!capOn&&PAIRS.includes(p.instrument)&&PAIRS.every(s=>Number.isFinite(mids[s]))){
    const oldest=Math.min(...PAIRS.map(s=>times[s]));trade.DXY=PAIRS.every(s=>trade[s])&&Date.now()-oldest<=30000
    await setPrice('DXY',dxyFormula(mids),trade.DXY?onTick:null,{dataTs:oldest,tradeable:trade.DXY})
   }
@@ -118,17 +109,11 @@ export function createQuoteFeed(env){
  }
   async function pollCapital(onTick, dispatch=fn=>fn()) {
     if(!capOn || Date.now()<capNext)return
-    const base=env.CAPITAL_ENV==='live'?'https://api-capital.backend-capital.com':'https://demo-api-capital.backend-capital.com'
     capitalDiagnostics.lastAttemptAt=Date.now();capitalDiagnostics.httpStatus=null;capitalDiagnostics.errorCode=null
     try {
-      if(!cst || Date.now()-loginAt>8*60000) {
-        capitalDiagnostics.stage='login'
-        const r=await fetch(base+'/api/v1/session',{method:'POST',headers:{'X-CAP-API-KEY':env.CAPITAL_API_KEY,'content-type':'application/json'},body:JSON.stringify({identifier:env.CAPITAL_IDENTIFIER,password:env.CAPITAL_PASSWORD,encryptedPassword:false}),signal:AbortSignal.timeout(8000)})
-        capitalDiagnostics.httpStatus=r.status
-        if(!r.ok)throw await capitalHttpError(r,'login')
-        cst=r.headers.get('cst')||'';sec=r.headers.get('x-security-token')||'';loginAt=Date.now()
-        if(!cst||!sec){capitalDiagnostics.errorCode='session_headers_missing';throw new Error('Capital session unavailable')}
-      }
+      const client=capitalClient(env)
+      // DXY discovery is independent; missing DXY must not disable metals/GER40.
+      try{SYMBOLS.DXY.capital=await client.dxyEpic()}catch(e){if(e.retrySafe||e.storageFailure)throw e;unavailable(['DXY'],['DXY'])}
       const items=Object.entries(SYMBOLS).filter(([,c])=>c.capital)
       // The epics bulk response has local updateTime only. Search responses include
       // updateTimeUTC; use that authoritative timestamp, never receipt time or a
@@ -137,14 +122,9 @@ export function createQuoteFeed(env){
       capitalDiagnostics.responseFormat='markets';capitalDiagnostics.receivedCount=0
       capitalDiagnostics.quotes={}
       for(const [s,c] of items) {
-        const searchTerm=s==='GER40'?(env.CAPITAL_SEARCH_GER40||(c.capital==='DE40'?'Germany 40':c.capital)):c.capital
+        const searchTerm=s==='DXY'?'Dollar Index':s==='GER40'?(env.CAPITAL_SEARCH_GER40||(c.capital==='DE40'?'Germany 40':c.capital)):c.capital
         capitalDiagnostics.stage='markets';capitalDiagnostics.httpStatus=null
-        const r=await fetch(base+'/api/v1/markets?searchTerm='+encodeURIComponent(searchTerm),{headers:{CST:cst,'X-SECURITY-TOKEN':sec},signal:AbortSignal.timeout(8000)})
-        capitalDiagnostics.httpStatus=r.status
-        if(r.status===401)cst=''
-        if(!r.ok)throw await capitalHttpError(r,'markets')
-        capitalDiagnostics.stage='decode_markets'
-        const d=await r.json()
+        const d=await client.get('/markets?searchTerm='+encodeURIComponent(searchTerm),capitalDiagnostics)
         if(!Array.isArray(d.markets)){capitalDiagnostics.errorCode='unexpected_markets_format';throw new Error('Capital markets unavailable')}
         capitalDiagnostics.stage='process_markets'
         const snapshot=d.markets.find(m=>m.epic===c.capital)

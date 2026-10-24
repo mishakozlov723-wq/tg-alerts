@@ -7,7 +7,7 @@ function fixture() {
  const elements=new Map(),intervals=[],timers=[],frames=['M15','H1','H4','D1'].map(tf=>({dataset:{tf},classList:{toggle(){}}}))
  const el=s=>{if(!elements.has(s))elements.set(s,{hidden:false,value:'',textContent:'',disabled:false,style:{},events:{},clientWidth:400,clientHeight:340,attrs:{},classList:{add(){},remove(){},toggle(){}},contains:()=>false,focus(){},setAttribute(k,v){this.attrs[k]=v},getAttribute(k){return this.attrs[k]},setPointerCapture(){},getBoundingClientRect:()=>({left:0,top:0}),querySelectorAll:()=>frames,replaceChildren(...a){this.options=a},add(a){this.options.push(a)},addEventListener(n,fn){this.events[n]=fn}});return elements.get(s)}
  let quote={price:1.3,dataTs:Date.now(),observedAt:Date.now(),stale:false,tradeable:true},click,range=null,table=[],lines=[],lastRequest,hasMore=true,list=[],delayList=null,fail=false,scale={from:1.2,to:1.4},chartOptions,seriesOptions
- const series={setData(a){table=a},update(a){table[table.length-1]=a},createPriceLine(a){a.applyOptions=o=>Object.assign(a,o);lines.push(a);return a},removePriceLine(a){lines=lines.filter(x=>x!==a)},priceToCoordinate:p=>p*100,coordinateToPrice:y=>y/100}
+ const series={applyOptions(o){seriesOptions={...seriesOptions,...o}},setData(a){table=a},update(a){table[table.length-1]=a},createPriceLine(a){a.applyOptions=o=>Object.assign(a,o);lines.push(a);return a},removePriceLine(a){lines=lines.filter(x=>x!==a)},priceToCoordinate:p=>p*100,coordinateToPrice:y=>y/100}
  const priceScale={width:()=>68,getVisibleRange:()=>scale,setVisibleRange:r=>scale=r,applyOptions(){}}
  let crosshair,rangeChange
  const chart={applyOptions(o){chartOptions={...chartOptions,...o,handleScroll:{...chartOptions.handleScroll,...o.handleScroll}}},subscribeCrosshairMove(fn){crosshair=fn},addSeries(_,o){seriesOptions=o;return series},priceScale:()=>priceScale,clearCrosshairPosition(){},setCrosshairPosition(){},subscribeClick(fn){click=fn},timeScale:()=>({coordinateToTime:()=>1,getVisibleLogicalRange:()=>range,setVisibleLogicalRange:r=>range=r,subscribeVisibleLogicalRangeChange(fn){rangeChange=fn}})}
@@ -82,7 +82,7 @@ test('refresh preserves manual viewport; manual form collapses for chart symbols
  assert.equal(b.inert,true);assert.equal(t.attrs['aria-expanded'],'false');t.onclick();assert.equal(b.inert,false)
  f.select('EURUSD');assert.equal(b.inert,false)
  const r={from:20,to:80};f.setRange(r);f.intervals[0]();await settle();assert.equal(f.range.from,r.from);assert.equal(f.range.to,r.to)
- f.select('GBPUSD');assert.equal(b.inert,true);f.select('DXY');assert.equal(b.inert,false);assert.equal(t.hidden,true)
+ f.select('GBPUSD');assert.equal(b.inert,true);f.select('UNSUPPORTED');assert.equal(b.inert,false);assert.equal(t.hidden,true)
  f.select('GBPUSD');assert.equal(b.inert,true);assert.equal(t.hidden,false)
 })
 test('tap never creates a candidate; hold, move, plus, correction, explicit create and delete',async()=>{
@@ -109,11 +109,26 @@ test('old alert-list response cannot resurrect a deleted line',async()=>{
  f.el('#chartExisting').onchange({target:{value:'1'}});f.el('#chartDelete').onclick({target:f.el('#chartDelete')});await settle()
  release([{id:1,symbol:'GBPUSD',status:'active',level:1.3,dir:'above'}]);await settle();assert.equal(f.el('#chartExisting').options.length,1)
 })
-test('EUR switch isolates lines and creates the correct symbol; DXY stays without chart',async()=>{
+test('EUR switch isolates lines and creates the correct symbol; DXY has its own chart',async()=>{
  const f=fixture();f.select();await settle();f.hold();await f.el('#chartAdd').onclick({target:f.el('#chartAdd')})
  f.select('EURUSD');await settle();assert.match(f.lastRequest,/symbol=EURUSD/);assert.equal(f.el('#chartExisting').options.length,1)
  f.hold();await f.el('#chartAdd').onclick({target:f.el('#chartAdd')});assert.equal(f.list.at(-1).symbol,'EURUSD')
- f.select('DXY');assert.equal(f.el('#gbpChart').hidden,true)
+ f.select('DXY');await settle();assert.equal(f.el('#gbpChart').hidden,false);assert.match(f.lastRequest,/symbol=DXY/);assert.equal(f.options.seriesOptions.priceFormat.precision,3)
+})
+test('GER40, gold and silver use their own chart, precision and explicit alert CRUD',async()=>{
+ const f=fixture()
+ for(const [symbol,precision,level] of [['GER40',1,'23456.7'],['XAUUSD',2,'3456.78'],['XAGUSD',3,'42.123']]) {
+  f.select(symbol);await settle()
+  assert.equal(f.el('#gbpChart').hidden,false);assert.match(f.lastRequest,new RegExp('symbol='+symbol))
+  assert.equal(f.options.seriesOptions.priceFormat.precision,precision)
+  assert.equal(f.el('#manualBody').inert,true)
+  f.hold();f.el('#chartPrice').value=level;f.el('#chartPrice').oninput()
+  assert.equal(f.list.length,0)
+  await f.el('#chartAdd').onclick({target:f.el('#chartAdd')})
+  assert.equal(f.list[0].symbol,symbol);assert.equal(f.list[0].level,Number(level))
+  f.el('#chartExisting').onchange({target:{value:'1'}})
+  await f.el('#chartDelete').onclick({target:f.el('#chartDelete')});assert.equal(f.list.length,0)
+ }
 })
 test('price-axis vertical drag changes range, pane movement cancels hold, monochrome palette',async()=>{
  const f=fixture();f.select();await settle();const axis=f.el('#chartAxis'),before=f.scale.to-f.scale.from

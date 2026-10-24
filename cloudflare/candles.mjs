@@ -1,3 +1,4 @@
+import { createCapitalCandles } from './capital-candles.mjs'
 // One bounded, shared history per timeframe; never used to trigger alerts.
 export const CHART_SYMBOLS = { GBPUSD: 'GBP_USD', EURUSD: 'EUR_USD' }
 export const CHART_FRAMES = { M15: { seconds: 900, limit: 2000 }, H1: { seconds: 3600, limit: 2000 }, H4: { seconds: 14400, limit: 1500 }, D1: { seconds: 86400, limit: 1000 } }
@@ -16,6 +17,7 @@ export function parseCandles(rows, side) {
   return [...result.values()].sort((a, b) => a.time - b.time)
 }
 export function createCandles(env, store, now = Date.now) {
+  const capital = createCapitalCandles(env, store, now)
   const fetcher = env.FETCH || globalThis.fetch, slots = new Map()
   const side = env.OANDA_SIDE || 'bid', component = { bid: 'B', ask: 'A', mid: 'M' }[side]
   const identity = JSON.stringify([env.OANDA_ENV || 'practice', side, env.OANDA_ACCOUNT || ''])
@@ -60,6 +62,7 @@ export function createCandles(env, store, now = Date.now) {
   }
   return { async get(params) {
     const tf = params.get('timeframe') || 'M15', symbol = params.get('symbol') || 'GBPUSD'
+    if (['DXY', 'GER40', 'XAUUSD', 'XAGUSD'].includes(symbol)) return capital.get(params)
     if (!Object.hasOwn(CHART_SYMBOLS, symbol) || !Object.hasOwn(CHART_FRAMES, tf)) throw fail('unsupported_chart', 400)
     const raw = params.get('before'), before = raw === null ? Infinity : Number(raw)
     if (raw !== null && (!/^\d+$/.test(raw) || !Number.isSafeInteger(before) || before <= 0)) throw fail('invalid_cursor', 400)

@@ -33,7 +33,7 @@ test('side mapping, fixed frames and no arbitrary instrument/provider access',as
   const r=await source.get(params('D1'));assert.equal(r.side,side);assert.equal(f.requests[0].searchParams.get('price'),component);assert.equal(f.requests[0].searchParams.get('granularity'),'D')
  }
  const f=fixture(),source=createCandles(f.env,f.store)
- await assert.rejects(source.get(new URLSearchParams('symbol=DXY')),/unsupported_chart/)
+ await assert.rejects(source.get(new URLSearchParams('symbol=UNKNOWN')),/unsupported_chart/)
  await assert.rejects(source.get(params('M1')),/unsupported_chart/)
  await assert.rejects(source.get(params('M15','&before=abc')),/invalid_cursor/);assert.equal(f.requests.length,0)
 })

@@ -6,6 +6,7 @@
   "compatibility_flags":["nodejs_compat","global_fetch_strictly_public"],
   "workers_dev":true,
   "preview_urls":false,
+  "keep_vars":true,
   "assets":{"directory":"./public","binding":"ASSETS","run_worker_first":true},
   "durable_objects":{"bindings":[{"name":"ALERTS","class_name":"AlertsEngine"}]},
   "migrations":[{"tag":"v1","new_sqlite_classes":["AlertsEngine"]}],

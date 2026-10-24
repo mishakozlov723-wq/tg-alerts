@@ -4,7 +4,7 @@
   const palette = { light: '#d4d4d0', dark: '#666662', label: '#bcbcb7', grid: '#272727' }
   let chart, series, api, getQuote, symbol, tf = 'M15', rows = [], hasMore = false, busy = false, generation = 0
   let chosen, draft, lines = [], alerts = [], active = false, loadedAt = 0, lastLive = 0, listVersion = 0, historyStale = true
-  let candidate = null, holding = false, hold, start, axisDrag, touchActive = false, multiTouch = false, scaleBase = null, candidateTime = null, manualAsset = null, draftDrag = false
+  let candidate = null, holding = false, hold, start, axisDrag, touchActive = false, multiTouch = false, scaleBase = null, candidateTime = null, manualAsset = null, draftDrag = false, mouseHover = false
   function draftHit(p) {
     const price = candidate ?? (!$('#chartTicket').hidden ? Number($('#chartPrice').value.replace(',', '.')) : NaN)
     return Number.isFinite(price) && Math.abs((series.priceToCoordinate(price) ?? -1000) - p.y) <= 14
@@ -53,7 +53,7 @@
     } else { if (draft) series.removePriceLine(draft); draft = null }
   }
   function clearSelection() {
-    endHold(); chosen = null; candidate = null; candidateTime = null
+    endHold(); mouseHover = false; chosen = null; candidate = null; candidateTime = null
     $('#chartTicket').hidden = true; $('#chartPlus').hidden = true
     if (draft) series.removePriceLine(draft)
     draft = null
@@ -62,7 +62,7 @@
   }
   function selection(price, alert) {
     if (!Number.isFinite(price) || price <= 0) return
-    chosen = alert || null; candidate = alert ? null : price
+    mouseHover = false; chosen = alert || null; candidate = alert ? null : price
     $('#chartPrice').value = price.toFixed(digits())
     $('#chartTicket').hidden = false; $('#chartPlus').hidden = true
     $('#chartAdd').hidden = false; $('#chartAdd').textContent = 'Save alert'; $('#chartDelete').hidden = !chosen
@@ -233,6 +233,7 @@
       if (!e.isPrimary || e.button > 0) return
       const p = point(e)
       if (p.x >= canvas.clientWidth - chart.priceScale('right').width() || p.y >= canvas.clientHeight - 28) return
+      if (mouseHover) clearSelection()
       if (lineHit(p)) {
         draftDrag = true; holding = true
         chart.applyOptions({ handleScroll: { pressedMouseMove: false } })
@@ -249,6 +250,14 @@
     }, { passive:false })
     canvas.addEventListener('pointermove', e => {
       if (e.pointerType === 'touch') return
+      // Desktop hover is separate from touch tracking and press/drag selection.
+      if (e.pointerType === 'mouse' && window.matchMedia('(any-hover: hover) and (any-pointer: fine)').matches && !e.buttons && !start && !holding && !axisDrag && !touchActive && active && $('#chartTicket').hidden) {
+        const p = point(e), width = canvas.clientWidth - chart.priceScale('right').width()
+        if (p.x >= 0 && p.x < width && p.y >= 0 && p.y < canvas.clientHeight - 28) {
+          moveCandidate(p, true); mouseHover = candidate !== null
+        } else if (mouseHover) clearSelection()
+        return
+      }
       if (draftDrag && start?.id === e.pointerId) { e.preventDefault(); moveDraft(point(e)); return }
       if (holding && start?.id === e.pointerId) { e.preventDefault(); moveCandidate(point(e)) }
       else if (start && Math.hypot(e.clientX-start.x,e.clientY-start.y)>5) endHold()
@@ -256,6 +265,10 @@
     canvas.addEventListener('pointerup', e => { if (e.pointerType !== 'touch') endHold() })
     canvas.addEventListener('pointercancel', e => { if (e.pointerType !== 'touch') endHold() })
     canvas.addEventListener('lostpointercapture', () => endHold())
+    // Keep the candidate when crossing from the canvas onto the sibling + button.
+    canvas.parentElement.addEventListener('pointerleave', e => {
+      if (e.pointerType === 'mouse' && mouseHover && !holding && !draftDrag && $('#chartTicket').hidden) clearSelection()
+    })
     $('#chartPlus').onclick = () => { if (candidate !== null) selection(candidate) }
     // Explicit price-axis drag works for both touch and mouse without stealing pane pan/pinch.
     const axis = $('#chartAxis')

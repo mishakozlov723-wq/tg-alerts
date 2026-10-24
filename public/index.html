@@ -148,6 +148,8 @@ body.ready .rise{opacity:1;transform:none}
 .tabs button{font-size:9px;letter-spacing:.08em}
 
 .alert-filters{display:flex;gap:10px;margin:-10px 0 10px}.alert-filters label{flex:1;min-width:0;font-size:10px;color:var(--mut)}.alert-filters select{display:block;width:100%;min-height:42px;margin-top:6px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--txt);font:inherit;font-size:12px;color-scheme:dark}.alert-filter-count{font-size:11px;color:var(--mut);margin-bottom:16px}
+
+.chart-credits-settings{margin-top:28px;border-top:1px solid var(--line);padding-top:16px;color:var(--mut);font-size:11px}.chart-credits-settings summary{cursor:pointer}.chart-credits-settings .chart-credit{margin:12px 0 0;padding:0;text-align:left}
 </style>
 </head>
 <body>
@@ -236,9 +238,10 @@ body.ready .rise{opacity:1;transform:none}
     <div class="h4-group"><div class="eyebrow lbl">Notify before (min)</div><div class="opt" id="h4Lead"></div></div>
     <div class="setting-row"><div><b>At candle close</b></div><button id="h4AtClose" class="switch" type="button" role="switch" aria-checked="true" aria-label="Notify at candle close" disabled></button></div>
     <div class="h4-group"><div class="eyebrow lbl">Next close</div><div id="h4Schedule"></div></div>
+    <details class="chart-credits-settings"><summary>Chart credits</summary><div class="chart-credit">TradingView Lightweight Charts™ · Copyright (с) 2025 <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView, Inc.</a> · <a href="/lightweight-charts-LICENSE.txt">Apache 2.0</a></div></details>
   </section>
 </div>
-<footer class="chart-credit">TradingView Lightweight Charts™ · Copyright (с) 2025 <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView, Inc.</a> · <a href="/lightweight-charts-LICENSE.txt">Apache 2.0</a></footer>
+
 
 <nav class="tabs"><div>
   <button class="on" data-t="new">New</button>

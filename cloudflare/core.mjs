@@ -1,3 +1,4 @@
+import { createUserAdmin } from './admin-users.mjs'
 // Cloudflare adapter: API and Telegram business rules retained from server.js.
 // Node/Render entrypoint remains untouched. One DO owns synchronous SQLite commits;
 // broker ingestion is serialized, background network waits are independent.
@@ -412,7 +413,13 @@ async function showStatus(section = 'summary') {
   return { text: monitor.render(section), reply_markup: statusKeyboard() }
 }
 
+const userAdmin = createUserAdmin({ db, symbols: SYMBOLS, save, tg, adminId: monitorAdmin, extraIds: async () => {
+  const h4 = await getH4Store(), live = await getLiveStore()
+  return [...Object.keys(h4?.all() || {}), ...(live?.all() || []).map(r => r.userId)]
+} })
+
 async function handleCallback(q) {
+  if (await userAdmin.callback(q)) return
   const uid = String(q.from.id), data = q.data || ''
   const chat = q.message && q.message.chat.id, mid = q.message && q.message.message_id
   const ans = (text) => tg('answerCallbackQuery', { callback_query_id: q.id, text })
@@ -502,9 +509,12 @@ async function handleCallback(q) {
 }
 
 async function handleUpdate(u) {
+  const profile = u.callback_query?.from || (u.message?.chat?.type === 'private' ? u.message.from : null)
+  if (profile) await userAdmin.remember(profile)
   if (u.callback_query) return handleCallback(u.callback_query)
   const m = u.message
   if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
+  if (await userAdmin.command(m)) return
   const uid = String(m.from.id), txt = m.text.trim()
   const statusCommand = txt.match(/^\/status(?:@\w+)?(?:\s+(all|quotes|news|delivery|h4|live|scheduler|access|logs))?$/i)
   if (statusCommand) {
@@ -526,7 +536,7 @@ async function handleUpdate(u) {
       const s = g[3].toUpperCase()
       if (!isPremium(s) && !BUNDLES[s]) { await tg('sendMessage', { chat_id: m.chat.id, text: 'Unknown paid quote. Use: ' + [...Object.keys(SYMBOLS).filter(isPremium), ...Object.keys(BUNDLES)].join(', ') }); return }
       if (g[1].toLowerCase() === 'grant') await grant(g[2], s)
-      else { const list = BUNDLES[s] ? BUNDLES[s].syms : [s]; db.owned[g[2]] = (db.owned[g[2]] || []).filter((x) => !list.includes(x)); await save() }
+      else await userAdmin.revoke(g[2], BUNDLES[s] ? BUNDLES[s].syms : [s])
       await tg('sendMessage', { chat_id: m.chat.id, text: `Done: ${g[1].toLowerCase()} ${s} for ${g[2]}` })
       return
     }
@@ -559,6 +569,8 @@ async function handleHttp(req, res) {
   const url = new URL(req.url, 'http://x')
   const p = url.pathname
   if (p === '/health') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok') }
+  const visitor = getUserId(req)
+  if (visitor) await userAdmin.remember({ id: visitor })
   if (p === '/api/config') return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: symbolsFor(getUserId(req)), quoteMode: 'stream', displayIntervalMs: 1000 })
   if (p === '/api/feed-status') return json(res, 200, quoteFeed.status())
   if (p === '/api/prices') {

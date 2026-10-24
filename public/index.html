@@ -467,7 +467,7 @@ function renderAlerts() {
       <div class="t">${a.symbol}<em>${a.dir === 'reach' ? 'Price level' : a.dir === 'above' ? '▲ above · legacy' : '▼ below · legacy'}</em></div>
       <div class="t" class="num" style="font-weight:200;font-size:26px;margin-top:2px">${a.level}</div>
       ${a.note ? `<div class="note">${esc(a.note)}</div>` : ''}
-      <small>${a.status === 'active' ? 'Active' : 'Triggered ' + new Date(a.firedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' at ' + a.firedPrice}</small></div>
+      <small>${a.status === 'active' ? 'Active' : a.status === 'paused' ? 'Paused · access revoked' : 'Triggered ' + new Date(a.firedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' at ' + a.firedPrice}</small></div>
       <div class="acts">${a.status === 'active' ? `<button class="ed" data-id="${a.id}">Edit</button>` : ''}<button class="x" data-id="${a.id}" aria-label="Delete alert">✕</button></div></div>`).join('') : '<div class="empty">No alerts yet.</div>'
   $('#alist').querySelectorAll('.x').forEach((b) => b.onclick = async () => {
     try {

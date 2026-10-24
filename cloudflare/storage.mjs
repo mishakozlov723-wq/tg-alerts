@@ -7,7 +7,7 @@ export function validateMain(value){
  const d={...emptyMain(),...value}
  for(const k of ['settings','owned','orders','sentNews'])if(!d[k]||typeof d[k]!=='object'||Array.isArray(d[k]))throw new Error('invalid_import_'+k)
  if(!Array.isArray(d.alerts)||!Array.isArray(d.events)||!Number.isSafeInteger(d.seq)||d.seq<1)throw new Error('invalid_import_main')
- if(d.alerts.some(a=>!a||!Number.isSafeInteger(a.id)||typeof a.userId!=='string'||!['active','fired'].includes(a.status)||!Number.isFinite(a.level)))throw new Error('invalid_import_alerts')
+ if(d.alerts.some(a=>!a||!Number.isSafeInteger(a.id)||typeof a.userId!=='string'||!['active','fired','paused'].includes(a.status)||!Number.isFinite(a.level)))throw new Error('invalid_import_alerts')
  return d
 }
 export function createLocalStore(storage){

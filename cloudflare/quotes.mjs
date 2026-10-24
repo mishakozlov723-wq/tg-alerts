@@ -18,7 +18,7 @@ export function createQuoteFeed(env){
  const capOn=!!(env.CAPITAL_API_KEY&&env.CAPITAL_IDENTIFIER&&env.CAPITAL_PASSWORD)
  // Public health diagnostics: fixed metadata and validated provider error codes only.
  // Never expose response bodies, exception messages, credentials or session headers.
- const capitalDiagnostics={version:2,configured:capOn,environment:env.CAPITAL_ENV==='live'?'live':'demo',stage:capOn?'not_attempted':'unconfigured',httpStatus:null,errorCode:null,lastAttemptAt:null,lastSuccessAt:null}
+ const capitalDiagnostics={version:3,configured:capOn,environment:env.CAPITAL_ENV==='live'?'live':'demo',stage:capOn?'not_attempted':'unconfigured',httpStatus:null,errorCode:null,lastAttemptAt:null,lastSuccessAt:null}
  async function capitalHttpError(response,stage){
   let code=null
   try{
@@ -130,42 +130,50 @@ export function createQuoteFeed(env){
         if(!cst||!sec){capitalDiagnostics.errorCode='session_headers_missing';throw new Error('Capital session unavailable')}
       }
       const items=Object.entries(SYMBOLS).filter(([,c])=>c.capital)
-      capitalDiagnostics.stage='markets';capitalDiagnostics.httpStatus=null
-      const r=await fetch(base+'/api/v1/markets?epics='+encodeURIComponent(items.map(([,c])=>c.capital).join(',')),{headers:{CST:cst,'X-SECURITY-TOKEN':sec},signal:AbortSignal.timeout(8000)})
-      capitalDiagnostics.httpStatus=r.status
-      if(r.status===401)cst=''
-      if(!r.ok)throw await capitalHttpError(r,'markets')
-      capitalDiagnostics.stage='decode_markets'
-      const d=await r.json(),seen=[]
-      capitalDiagnostics.stage='process_markets'
-      capitalDiagnostics.responseFormat=Array.isArray(d.marketDetails)?'marketDetails':Array.isArray(d.markets)?'markets':'unknown'
-      capitalDiagnostics.receivedCount=Array.isArray(d.marketDetails)?d.marketDetails.length:Array.isArray(d.markets)?d.markets.length:0
+      // The epics bulk response has local updateTime only. Search responses include
+      // updateTimeUTC; use that authoritative timestamp, never receipt time or a
+      // guessed timezone. Match the exact epic so similarly named markets cannot leak in.
+      const seen=[]
+      capitalDiagnostics.responseFormat='markets';capitalDiagnostics.receivedCount=0
       capitalDiagnostics.quotes={}
-      for(const m of d.marketDetails||[]) {
-        const item=items.find(([,c])=>c.capital===(m.instrument?.epic||m.epic));if(!item)continue
-        const [s,c]=item,bid=Number(m.snapshot?.bid),ask=Number(m.snapshot?.offer)
-        const snapshot=m.snapshot||{}
-        capitalDiagnostics.quotes[s]={hasBid:typeof snapshot.bid==='number'&&Number.isFinite(snapshot.bid),hasOffer:typeof snapshot.offer==='number'&&Number.isFinite(snapshot.offer),hasUpdateTimeUTC:typeof snapshot.updateTimeUTC==='string',hasUpdateTime:typeof snapshot.updateTime==='string',stored:false,reason:'pending'}
+      for(const [s,c] of items) {
+        const searchTerm=s==='GER40'?(env.CAPITAL_SEARCH_GER40||(c.capital==='DE40'?'Germany 40':c.capital)):c.capital
+        capitalDiagnostics.stage='markets';capitalDiagnostics.httpStatus=null
+        const r=await fetch(base+'/api/v1/markets?searchTerm='+encodeURIComponent(searchTerm),{headers:{CST:cst,'X-SECURITY-TOKEN':sec},signal:AbortSignal.timeout(8000)})
+        capitalDiagnostics.httpStatus=r.status
+        if(r.status===401)cst=''
+        if(!r.ok)throw await capitalHttpError(r,'markets')
+        capitalDiagnostics.stage='decode_markets'
+        const d=await r.json()
+        if(!Array.isArray(d.markets)){capitalDiagnostics.errorCode='unexpected_markets_format';throw new Error('Capital markets unavailable')}
+        capitalDiagnostics.stage='process_markets'
+        const snapshot=d.markets.find(m=>m.epic===c.capital)
+        if(!snapshot){capitalDiagnostics.quotes[s]={stored:false,reason:'epic_not_found'};continue}
+        capitalDiagnostics.receivedCount++
+        const bid=Number(snapshot.bid),ask=Number(snapshot.offer)
+        capitalDiagnostics.quotes[s]={hasBid:snapshot.bid!=null&&Number.isFinite(bid),hasOffer:snapshot.offer!=null&&Number.isFinite(ask),hasUpdateTimeUTC:typeof snapshot.updateTimeUTC==='string',hasUpdateTime:typeof snapshot.updateTime==='string',stored:false,reason:'pending'}
         const diagnostic=capitalDiagnostics.quotes[s]
-        if(!Number.isFinite(bid)||!Number.isFinite(ask)){diagnostic.reason='invalid_price';continue}
-        const raw=m.snapshot.updateTimeUTC
-        // Capital's UTC field has no offset. Never interpret it in the host timezone.
+        if(snapshot.bid==null||snapshot.offer==null||!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask<bid){diagnostic.reason='invalid_price';continue}
+        const raw=snapshot.updateTimeUTC
         const dataTs=typeof raw==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?$/.test(raw)?Date.parse(raw.endsWith('Z')?raw:raw+'Z'):NaN
         seen.push(s)
         const side=env.CAPITAL_SIDE||'mid',v=side==='bid'?bid:side==='ask'?ask:(bid+ask)/2
         await dispatch(async()=>{
           if(!Number.isFinite(dataTs)||dataTs>Date.now()+60000){diagnostic.reason=!Number.isFinite(dataTs)?'missing_or_invalid_utc_time':'future_time';trade[s]=false;return}
           if(dataTs<(prices[s]?.dataTs||0)){diagnostic.reason='older_than_cached';return}
-          const valid=m.snapshot.marketStatus==='TRADEABLE'&&Date.now()-dataTs<=30000
+          const valid=snapshot.marketStatus==='TRADEABLE'&&Date.now()-dataTs<=30000
           trade[s]=valid
           await setPrice(s,v+(c.offset||0),valid?onTick:null,{dataTs,tradeable:valid})
-          diagnostic.stored=true;diagnostic.reason=valid?'fresh':m.snapshot.marketStatus==='TRADEABLE'?'stale':'market_closed'
+          diagnostic.stored=true;diagnostic.reason=valid?'fresh':snapshot.marketStatus==='TRADEABLE'?'stale':'market_closed'
         })
       }
       unavailable(items.map(([s])=>s),items.filter(([s])=>!seen.includes(s)).map(([s])=>s))
       capFails=0;errors.capital=null
       capitalDiagnostics.stage=Object.values(capitalDiagnostics.quotes).some(q=>q.stored)?'ok':'no_quotes_accepted';capitalDiagnostics.errorCode=null;capitalDiagnostics.lastSuccessAt=Date.now()
     } catch(e) {
+      // Rotating a Cloudflare request-budget window is not a broker failure.
+      // Resume immediately in the next invocation instead of adding a 20s backoff.
+      if(e.retrySafe){capitalDiagnostics.stage='deferred';capitalDiagnostics.errorCode='runtime_deferred';throw e}
       if(!capitalDiagnostics.errorCode)capitalDiagnostics.errorCode=e.retrySafe?'runtime_deferred':e.storageFailure?'storage_error':['TimeoutError','AbortError'].includes(e.name)?'request_aborted_or_timeout':capitalDiagnostics.stage==='decode_markets'?'invalid_json':capitalDiagnostics.stage==='process_markets'?'processing_error':'network_or_runtime_error'
       capFails++;capNext=Date.now()+Math.min(300000,10000*2**Math.min(capFails,5));errors.capital='Capital feed unavailable';throw e }
   }

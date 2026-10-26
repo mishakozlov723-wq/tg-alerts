@@ -1,3 +1,4 @@
+// Fixtures follow the current /markets?searchTerm= response with authoritative updateTimeUTC.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createQuoteFeed } from '../cloudflare/quotes.mjs'
@@ -6,7 +7,7 @@ const credentials = { CAPITAL_API_KEY:'fixture', CAPITAL_IDENTIFIER:'fixture', C
 test('Capital uses broker UTC time, rejects missing/future/old/closed quotes and never rejuvenates snapshots', async () => {
  const clock=Date.now; let now=Date.parse('2026-10-21T12:00:00Z'), raw=new Date(now).toISOString().slice(0,-1), status='TRADEABLE', bid=100
  Date.now=()=>now
- const feed=createQuoteFeed({...credentials,FETCH:async url=>url.endsWith('/session')?Response.json({}, {headers:{cst:'fixture','x-security-token':'fixture'}}):Response.json({marketDetails:[{instrument:{epic:'GOLD'},snapshot:{bid,offer:bid+1,marketStatus:status,updateTimeUTC:raw}}]})})
+ const feed=createQuoteFeed({...credentials,FETCH:async url=>url.endsWith('/session')?Response.json({}, {headers:{cst:'fixture','x-security-token':'fixture'}}):Response.json({markets:[{epic:'GOLD',bid,offer:bid+1,marketStatus:status,updateTimeUTC:raw}]})})
  const ticks=[]
  try {
   await feed.capital((...x)=>ticks.push(x));assert.equal(feed.prices.XAUUSD.dataTs,now);assert.equal(feed.fresh('XAUUSD'),true)

@@ -1,5 +1,8 @@
 import crypto from 'node:crypto'
 
+// One-time server-side reset. Keep this fixed across deploys; new sessions still last 96h.
+export const ALERTS_SESSION_NOT_BEFORE = Date.parse('2026-10-26T20:05:40Z')
+
 const b64 = (value) => Buffer.from(value, 'base64url').toString('utf8')
 const safeEqual = (a, b) => { try { return a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b)) } catch { return false } }
 
@@ -12,6 +15,7 @@ export function verifyAccessToken(token, project, secret) {
   try {
     const payload = JSON.parse(b64(body))
     if (payload.project !== project || !payload.sub || Number(payload.exp) <= Date.now()) return null
+    if (project === 'alerts' && (!Number.isFinite(payload.iat) || payload.iat < ALERTS_SESSION_NOT_BEFORE)) return null
     return payload
   } catch { return null }
 }

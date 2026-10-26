@@ -15,7 +15,7 @@ test('authenticated API, news/alert regression, real scheduler with stubbed OAND
   const child=spawn(process.execPath,['--import','./test/fixture-fetch.js','server.js'],{cwd:root,env:{PATH:process.env.PATH,PORT:String(port),DB_FILE:path.join(dir,'db.json'),PRICE_SOURCE:'oanda',OANDA_TOKEN:'fixture-token',OANDA_STREAM:'0',BOT_TOKEN:'fixture-token',BOT_POLLING:'off',NEWS_SOURCE:'mock',TG_API:'https://telegram.test.invalid',ACCESS_SIGNING_SECRET:secret,REQUIRE_ACCESS:'true',H4_TEST_DELIVERIES:path.join(dir,'deliveries')}})
   let output='';child.stdout.on('data',(c)=>output+=c);child.stderr.on('data',(c)=>output+=c)
   const base='http://127.0.0.1:'+port
-  const headers=(uid)=>{const body=Buffer.from(JSON.stringify({sub:uid,project:'alerts',exp:Date.now()+86400e3})).toString('base64url');return {'content-type':'application/json','x-access-token':body+'.'+crypto.createHmac('sha256',secret).update(body).digest('hex')}}
+  const headers=(uid)=>{const body=Buffer.from(JSON.stringify({sub:uid,project:'alerts',iat:Date.now(),exp:Date.now()+86400e3})).toString('base64url');return {'content-type':'application/json','x-access-token':body+'.'+crypto.createHmac('sha256',secret).update(body).digest('hex')}}
   async function call(route,{uid='1234',method='GET',body}={}) {
     const r=await fetch(base+route,{method,headers:headers(uid),body:body?JSON.stringify(body):undefined});return {status:r.status,data:await r.json()}
   }

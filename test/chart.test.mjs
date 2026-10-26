@@ -59,7 +59,7 @@ test('invalid broker OHLC never accepted',()=>{
 })
 test('authenticated chart and existing owned alert CRUD survive engine restart without any chart triggering',async()=>{
  const db=new DatabaseSync(':memory:'),store=createLocalStore({sql:{exec:(q,...a)=>db.prepare(q).all(...a)},transactionSync:fn=>fn()});store.initialize({main:{...emptyMain(),owned:{'123':['DXY']}}})
- const secret='artificial-signing-key',payload=Buffer.from(JSON.stringify({project:'alerts',sub:'123',exp:Date.now()+600000})).toString('base64url'),token=payload+'.'+createHmac('sha256',secret).update(payload).digest('hex')
+ const secret='artificial-signing-key',payload=Buffer.from(JSON.stringify({project:'alerts',sub:'123',iat:Date.now(),exp:Date.now()+600000})).toString('base64url'),token=payload+'.'+createHmac('sha256',secret).update(payload).digest('hex')
  const f=fixture(),env={...f.env,LOCAL_STORE:store,ACCESS_SIGNING_SECRET:secret,REQUIRE_ACCESS:'true',PRICE_SOURCE:'oanda',MONITOR_ALERTS:'false'}
  const request=(core,path,method='GET',body,auth=token)=>core.http(new Request('https://local/api/'+path,{method,headers:{'x-access-token':auth,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})}))
  try {

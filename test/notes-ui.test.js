@@ -15,8 +15,8 @@ function fixture(){
   if(failSave)return {error:'unavailable'}
   const a=list.find(a=>String(a.id)===path.split('/').at(-1));Object.assign(a,JSON.parse(o.body));return {...a}
  }
- const context=vm.createContext({$,window:{},document:{activeElement:null,getElementById(){return null}},api,toast:t=>messages.push(t),console})
- function $(s){return s==='#alist'?alist:status}
+ const context=vm.createContext({$,cfg:{symbols:{}},Option:function(text,value){this.text=text;this.value=value},window:{AlertMotion:{capture:()=>()=>{}}},document:{activeElement:null,getElementById(){return null}},api,toast:t=>messages.push(t),console})
+ const filter={value:'all',replaceChildren(){}};function $(s){return s==='#alist'?alist:s.startsWith('#alertFilter')?filter:status}
  vm.runInContext(code,context)
  return {context,row,alist,status,messages,load:()=>vm.runInContext('loadAlerts()',context),edit:id=>vm.runInContext(`editAlert('${id}')`,context),get list(){return list},set failGet(v){failGet=v},set failSave(v){failSave=v},hold(p){release=p},draft:id=>vm.runInContext(`noteDrafts.get('${id}')?.value`,context)}
 }

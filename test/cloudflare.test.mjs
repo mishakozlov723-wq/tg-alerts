@@ -11,13 +11,14 @@ import {DatabaseSync} from 'node:sqlite'
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare'
 import {createLocalStore,emptyMain} from '../cloudflare/storage.mjs'
 import {createQuoteFeed} from '../cloudflare/quotes.mjs'
+import {ALERTS_SESSION_NOT_BEFORE} from '../shared/access-token.mjs'
 import {createEngine} from '../cloudflare/core.mjs'
 
 // No real credentials or live network. All API responses and identities are artificial.
 const SECRET='artificial-signing-secret-01234567890123456789',WEBHOOK='artificial-webhook-secret-01234567890123456789',BOT='123456:artificial-token',uid='12345'
 const env={ADMIN_CHAT_ID:'99999',MONITOR_ALERTS:'false',BOT_TOKEN:BOT,ACCESS_SIGNING_SECRET:SECRET,TELEGRAM_WEBHOOK_SECRET:WEBHOOK,OANDA_TOKEN:'artificial-oanda',OANDA_ACCOUNT:'test-account',PRICE_SOURCE:'oanda',OANDA_ENV:'practice',OANDA_SIDE:'bid',REQUIRE_ACCESS:'true',WEBAPP_URL:'https://alerts.test',AUTH_API_URL:'https://access.test',STREAM_WINDOW_SECONDS:'2'}
 const initial=()=>({...emptyMain(),alerts:[{id:1,userId:uid,symbol:'EURUSD',dir:'above',level:9,status:'active',createdAt:1}],seq:30,owned:{[uid]:['XAUUSD','XAGUSD','GER40','DXY']},orders:{old:{status:'approved',userId:uid}},migrationMarker:'preserve',resetV2:true})
-const sign=(user=uid,project='alerts',extra={})=>{const b=Buffer.from(JSON.stringify({sub:user,project,exp:Date.now()+600000,...extra})).toString('base64url');return b+'.'+createHmac('sha256',SECRET).update(b).digest('hex')}
+const sign=(user=uid,project='alerts',extra={})=>{const b=Buffer.from(JSON.stringify({sub:user,project,iat:Date.now(),exp:Date.now()+600000,...extra})).toString('base64url');return b+'.'+createHmac('sha256',SECRET).update(b).digest('hex')}
 let telegramHold=null, telegramHeld=false
 let mf,sql,telegram=[],botName='artificial_alerts_bot',rejectStream=false,rejectTelegram=false,stale=false,closed=false,capitalCalls=0,candles=[],news=[],accessToken=null,streamStarts=0
 const persist=mkdtempSync(join(tmpdir(),'alerts-stream-test-')),streams=new Map(),encoder=new TextEncoder()
@@ -108,6 +109,19 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   assert.equal((await admin('activate',{confirmBot:botName})).status,200)
   await waitFor(()=>streamStarts>0)
   const r=await request('/health',null,{},'GET');assert.equal(r.data.storage,'sqlite');assert.equal(r.data.quoteMode,'stream');assert.equal(r.data.enabled,true);assert.equal(r.data.feed.pricing.oandaSide,'bid');assert.equal(r.data.feed.pricing.oandaEnvironment,'practice')
+ })
+ test('server reset rejects old signed sessions on protected reads and writes without deleting user data',async()=>{
+  const before=await getMain(),old=sign(uid,'alerts',{iat:ALERTS_SESSION_NOT_BEFORE-1})
+  for(const path of ['access/check','prices','alerts']){
+   const r=await api(path,null,'GET',old)
+   assert.equal(r.status,401,path)
+   assert.equal(r.headers.get('x-alerts-session-not-before'),String(ALERTS_SESSION_NOT_BEFORE))
+  }
+  assert.equal((await api('alerts',{symbol:'EURUSD',dir:'above',level:8},'POST',old)).status,401)
+  assert.equal((await api('access/check',null,'GET',sign(uid,'alerts',{iat:ALERTS_SESSION_NOT_BEFORE}))).status,200)
+  assert.equal((await api('alerts')).status,200)
+  const after=await getMain()
+  assert.deepEqual(after.alerts,before.alerts);assert.deepEqual(after.owned,before.owned);assert.deepEqual(after.orders,before.orders)
  })
  test('API stays responsive while a long stream alarm is running; tokens and CRUD preserved',async()=>{
   const start=Date.now();assert.equal((await api('prices')).status,200);assert.ok(Date.now()-start<1500)

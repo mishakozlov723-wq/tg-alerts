@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { timingSafeEqual, createHmac } from 'node:crypto'
 import { createEngine } from './core.mjs'
 import { createLocalStore, emptyMain } from './storage.mjs'
-import { verifyAccessToken } from '../shared/access-token.mjs'
+import { verifyAccessToken, ALERTS_SESSION_NOT_BEFORE } from '../shared/access-token.mjs'
 const equal=(a,b)=>{const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||''));return x.length===y.length&&timingSafeEqual(x,y)}
 const json=(status,value)=>Response.json(value,{status,headers:{'cache-control':'no-store','referrer-policy':'no-referrer','x-content-type-options':'nosniff'}})
 export function missing(env){
@@ -209,7 +209,10 @@ async function handle(req,env){
       if(j.token&&!verifyAccessToken(j.token,'alerts',env.ACCESS_SIGNING_SECRET))return json(503,{error:'access_signing_secret_mismatch'})
       return json(r.status,j)
     }
-    return stub(env).fetch(req)
+    const response=await stub(env).fetch(req)
+    if(!p.startsWith('/api/'))return response
+    const headers=new Headers(response.headers);headers.set('x-alerts-session-not-before',String(ALERTS_SESSION_NOT_BEFORE))
+    return new Response(response.body,{status:response.status,statusText:response.statusText,headers})
   }
   if(req.method!=='GET'&&req.method!=='HEAD')return json(405,{error:'method_not_allowed'})
   const assetRequest=new Request(req);assetRequest.headers.delete('if-none-match');assetRequest.headers.delete('if-modified-since')

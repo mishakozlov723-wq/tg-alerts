@@ -19,7 +19,7 @@ test('Live API auth, ownership, validation, CRUD, real timer, persistence and no
     child=spawn(process.execPath,['--import','./test/fixture-fetch.js','server.js'],{cwd:root,env:{PATH:process.env.PATH,PORT:String(port),DB_FILE:path.join(dir,'db.json'),PRICE_SOURCE:'oanda',OANDA_TOKEN:'fixture-token',OANDA_STREAM:'0',BOT_TOKEN:'fixture-token',BOT_POLLING:'off',NEWS_SOURCE:'mock',TG_API:'https://telegram.test.invalid',ACCESS_SIGNING_SECRET:secret,REQUIRE_ACCESS:'true',H4_TEST_DELIVERIES:deliveries,LIVE_TEST_CLOCK:clock}})
     child.stdout.on('data',(c)=>output+=c);child.stderr.on('data',(c)=>output+=c)
   }
-  const headers=(uid)=>{const b=Buffer.from(JSON.stringify({sub:uid,project:'alerts',exp:Date.now()+86400e3})).toString('base64url');return {'content-type':'application/json','x-access-token':b+'.'+crypto.createHmac('sha256',secret).update(b).digest('hex')}}
+  const headers=(uid)=>{const b=Buffer.from(JSON.stringify({sub:uid,project:'alerts',iat:Date.now(),exp:Date.now()+86400e3})).toString('base64url');return {'content-type':'application/json','x-access-token':b+'.'+crypto.createHmac('sha256',secret).update(b).digest('hex')}}
   async function call(route,{uid='1234',method='GET',body}={}){const r=await fetch(base+route,{method,headers:headers(uid),body:body?JSON.stringify(body):undefined});return {status:r.status,data:await r.json()}}
   async function ready(){for(let i=0;i<100;i++){try{if((await fetch(base+'/health')).ok)return}catch{}await wait(50)}throw new Error('Server not ready')}
   async function stop(){const c=child;if(!c||c.exitCode!==null)return;c.kill();await new Promise((r)=>c.once('exit',r))}

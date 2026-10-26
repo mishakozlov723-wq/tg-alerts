@@ -6,14 +6,14 @@ import vm from 'node:vm'
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
 const script = html.match(/<script>\s*([\s\S]*?)<\/script>/)[1]
 
-function boot({ saved = null, valid = false, authApi = '/local-access', redeemedToken = null, cached = null, pricesResponse = {}, eventsResponse = [], storageFails = false, expirePrices = false } = {}) {
+function boot({ saved = null, valid = false, authApi = '/local-access', redeemedToken = null, cached = null, pricesResponse = {}, eventsResponse = [], storageFails = false, expirePrices = false, introPending = false } = {}) {
   const elements = new Map()
   const element = (id) => {
     if (!elements.has(id)) {
       const classes = new Set(id === '#accessGate' ? ['hide'] : [])
       elements.set(id, {
         classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c), toggle() {} },
-        dataset: {}, style: { setProperty() {} }, value: '', textContent: '', removed: false,
+        replaceChildren(){},dataset: {}, style: { setProperty() {} }, value: '', textContent: '', removed: false,
         focus() { this.focused = true }, remove() { this.removed = true },
         addEventListener() {}, querySelectorAll: () => [],
       })
@@ -24,12 +24,15 @@ function boot({ saved = null, valid = false, authApi = '/local-access', redeemed
   if (cached) storage.set('retocker.quotes.display.v1', cached)
   const timers = [], requests = [], listeners = new Map(), errors = []
   const window = {
-    playIntro: () => new Promise(() => {}), // Intro never finishes: login must still be usable.
+    quoteState:()=> 'streaming',
+    playIntro: () => introPending ? new Promise(() => {}) : Promise.resolve(),
+    AccessCode: {bind({form,input,status,submit}) {form.onsubmit=async e=>{e.preventDefault();await submit()};return {setBusy(){},reset(){input.value='';status.textContent=''}}}},
+    AlertMotion:{capture:()=>()=>{}},
     addEventListener: (name, cb) => listeners.set(name, cb),
     dispatchEvent: (event) => listeners.get(event.type)?.(),
   }
   const context = vm.createContext({
-    window, Event, AbortSignal, console: { error: (e) => errors.push(e) }, performance: { now: () => 0 },
+    Option:function(text,value){this.text=text;this.value=value}, window, location:{protocol:'https:'}, matchMedia:()=>({matches:true}), Event, AbortSignal, console: { error: (e) => errors.push(e) }, performance: { now: () => 0 },
     document: { querySelector: (id) => id === '#splash' && element(id).removed ? null : element(id), querySelectorAll: () => [], getElementById: (id) => element('#' + id), addEventListener() {}, body: element('body') },
     localStorage: { getItem: (k) => storage.get(k), setItem: (k, v) => { if (storageFails) throw new Error('quota'); storage.set(k, v) }, removeItem: (k) => storage.delete(k) },
     setTimeout: (fn, ms) => { timers.push({ fn, ms }) }, setInterval() {}, requestAnimationFrame() {}, cancelAnimationFrame() {},
@@ -94,12 +97,12 @@ for (const cached of ['broken json', JSON.stringify({ version: 1, mock: true, pr
 }
 
 for (const saved of [null, 'expired-test-token']) {
-  test(`code entry is available without advancing timers (${saved ? 'expired session' : 'no session'})`, async () => {
+  test(`code entry is available after the intro (${saved ? 'expired session' : 'no session'})`, async () => {
     const app = boot({ saved })
     await settle()
     assert.equal(app.element('#accessGate').classList.contains('hide'), false)
-    assert.equal(app.element('#accessCode').focused, true)
-    assert.equal(app.element('#splash').removed, true)
+    assert.notEqual(app.element('#accessCode').focused, true, 'Do not open the keyboard before user action')
+    assert.equal(app.element('#splash').classList.contains('out'), true)
     assert.equal(app.requests.includes('/api/prices'), false, 'Protected bootstrap must wait for login')
     assert.equal(app.storage.has('retocker.access.alerts.v1'), false)
     app.element('#accessCode').value = '123456'
@@ -118,7 +121,7 @@ test('successful code entry resumes bootstrap without restoring the splash', asy
   await app.element('#accessForm').onsubmit({ preventDefault() {} })
   await settle()
   assert.equal(app.element('#accessGate').classList.contains('hide'), true)
-  assert.equal(app.element('#splash').removed, true)
+  assert.equal(app.element('#splash').classList.contains('out'), true)
   assert.equal(app.storage.get('retocker.access.alerts.v1'), 'new-test-token')
   assert.ok(app.requests.includes('/api/prices'))
   assert.deepEqual(app.errors, [])
@@ -177,7 +180,17 @@ test('failed configuration refresh reopens login visibly and permits a later suc
 test('missing access configuration is not hidden behind the splash', async () => {
   const app = boot({ authApi: '' })
   await settle()
-  assert.equal(app.element('#splash').removed, true)
+  assert.equal(app.element('#splash').classList.contains('out'), true)
   assert.equal(app.element('#accessStatus').textContent, 'Access server is not configured.')
   assert.equal(app.requests.includes('/api/prices'), false)
+})
+
+test('login waits for intro, but stuck intro has a bounded fallback and no appReady deadlock',async()=>{
+ const app=boot({introPending:true});await settle()
+ assert.equal(app.element('#accessGate').classList.contains('hide'),true)
+ assert.equal(app.element('#splash').classList.contains('out'),false)
+ const timeout=app.timers.find(t=>t.ms===15000);assert.ok(timeout);timeout.fn();await settle()
+ assert.equal(app.element('#accessGate').classList.contains('hide'),false)
+ assert.equal(app.requests.includes('/api/prices'),false)
+ assert.deepEqual(app.errors,[])
 })

@@ -1,3 +1,4 @@
+// Fixtures follow the current /markets?searchTerm= response with authoritative updateTimeUTC.
 import {test,before,after} from 'node:test'
 import assert from 'node:assert/strict'
 import {createHmac} from 'node:crypto'
@@ -48,7 +49,7 @@ async function outbound(req){
  if(u.hostname==='demo-api-capital.backend-capital.com'){
   capitalCalls++
   if(u.pathname.endsWith('/session'))return Response.json({}, {headers:{cst:'artificial-cst','x-security-token':'artificial-sec'}})
-  return Response.json({marketDetails:['GOLD','DE40','SILVER'].map(epic=>({instrument:{epic},snapshot:{bid:100,offer:101,marketStatus:'TRADEABLE',updateTimeUTC:new Date(Date.now()).toISOString()}}))})
+  return Response.json({markets:['GOLD','DE40','SILVER'].map(epic=>({epic,bid:100,offer:101,marketStatus:'TRADEABLE',updateTimeUTC:new Date(Date.now()).toISOString()}))})
  }
  if(['nfs.faireconomy.media','cdn-nfs.faireconomy.media'].includes(u.hostname))return Response.json(news)
  if(u.hostname==='access.test'){assert.equal(u.pathname,'/api/verify-code');assert.equal((await req.json()).project,'alerts');const client=req.headers.get('x-access-client'),at=req.headers.get('x-access-client-time');assert.match(client,/^[a-f0-9]{64}$/);assert.equal(req.headers.get('x-access-client-signature'),createHmac('sha256',SECRET).update(`alerts-client:${at}:${client}`).digest('hex'));return Response.json({ok:true,token:accessToken||sign()})}
@@ -99,7 +100,7 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
     assert.ok(r.data.includes('function restoreQuotes()'))
     assert.ok(r.data.includes('async function pollEvents()'))
    }
-   if(p!=='/setup.html'){assert.equal(r.headers.get('etag'),null);assert.equal(r.headers.get('content-encoding'),null);assert.ok(r.data.includes("fetch('/api/access/redeem'"));assert.ok(r.data.includes('ACCESS_SIGNING_SECRET в Alerts не совпадает'));assert.ok(!r.data.includes("catch { status.textContent = 'Invalid or already used code.' }"));assert.ok(r.data.includes('}, 1000)'));assert.ok(r.data.includes('last quote · reconnecting / market closed'));assert.ok(!r.data.includes('snapshots ~10s'));assert.ok(r.data.includes('streaming'))}
+   if(p!=='/setup.html'){assert.equal(r.headers.get('etag'),null);assert.equal(r.headers.get('content-encoding'),null);assert.ok(r.data.includes("fetch('/api/access/redeem'"));assert.ok(r.data.includes('ACCESS_SIGNING_SECRET в Alerts не совпадает'));assert.ok(!r.data.includes("catch { status.textContent = 'Invalid or already used code.' }"));assert.ok(r.data.includes('}, 1000)'));assert.ok(r.data.includes('window.quoteState(s, prices[s])'));assert.ok(!r.data.includes('snapshots ~10s'));assert.ok(r.data.includes('streaming'))}
   }
  })
  test('activation requires correct bot, then scheduler runs independently of UI',async()=>{

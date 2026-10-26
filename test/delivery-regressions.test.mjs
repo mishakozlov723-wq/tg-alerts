@@ -1,3 +1,4 @@
+// Fixtures follow the current /markets?searchTerm= response with authoritative updateTimeUTC.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
@@ -27,7 +28,7 @@ function fixture(main, now) {
     }
     if (url.hostname === 'demo-api-capital.backend-capital.com') {
       if (url.pathname.endsWith('/session')) return Response.json({}, { headers: { cst: 'fixture', 'x-security-token': 'fixture' } })
-      return Response.json({ marketDetails: ['GOLD', 'DE40', 'SILVER'].map(epic => ({ instrument: { epic }, snapshot: { bid: 100, offer: 101, marketStatus: 'TRADEABLE', updateTimeUTC: new Date(Date.now()).toISOString() } })) })
+      return Response.json({ markets: ['GOLD', 'DE40', 'SILVER'].map(epic => ({ epic, bid: 100, offer: 101, marketStatus: 'TRADEABLE', updateTimeUTC: new Date(Date.now()).toISOString() })) })
     }
     if (url.hostname.includes('faireconomy')) return Response.json(articles)
     throw new Error('No live network: ' + url.hostname)

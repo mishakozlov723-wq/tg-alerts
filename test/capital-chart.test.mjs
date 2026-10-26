@@ -1,3 +1,4 @@
+// Fixtures follow the current /markets?searchTerm= response with authoritative updateTimeUTC.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createCandles } from '../cloudflare/candles.mjs'
@@ -8,7 +9,7 @@ function fixture() {
   const u=new URL(input);requests.push(u)
   if(broken)return new Response('',{status:503})
   if(u.pathname.endsWith('/session'))return Response.json({}, {headers:{cst:'test','x-security-token':'test'}})
-  if(u.searchParams.has('searchTerm'))return Response.json({markets:[{epic:'TEST_DXY',instrumentName:'US Dollar Index'}]})
+  if(u.searchParams.has('searchTerm'))return Response.json({markets:[{epic:'TEST_DXY',instrumentName:'US Dollar Index',bid:100,offer:102,marketStatus:'TRADEABLE',updateTimeUTC:new Date().toISOString()}]})
   if(u.pathname.includes('/prices/')) {
    const step={MINUTE_15:900,HOUR:3600,HOUR_4:14400,DAY:86400}[u.searchParams.get('resolution')]
    const end=u.searchParams.has('to')?Date.parse(u.searchParams.get('to')+'Z')/1000:Date.now()/1000
@@ -36,7 +37,7 @@ test('Capital DXY ticks use same discovered instrument and price side as chart',
  const f=fixture(),feed=createQuoteFeed(f.env),ticks=[]
  await feed.capital((s,p)=>ticks.push([s,p]))
  assert.equal(feed.prices.DXY.price,101);assert.deepEqual(ticks,[['DXY',101]])
- assert.match(f.requests.find(u=>u.searchParams.has('epics')).searchParams.get('epics'),/TEST_DXY/)
+ assert.ok(f.requests.some(u=>u.pathname.endsWith('/markets')&&u.searchParams.get('searchTerm')==='Dollar Index'))
 })
 test('metals and GER40 isolate four-frame caches and share quote epic, side and offset',async()=>{
  const f=fixture(),original=f.env.FETCH
@@ -44,7 +45,7 @@ test('metals and GER40 isolate four-frame caches and share quote epic, side and 
  const epics={GER40:'CUSTOM_DE',XAUUSD:'GOLD',XAGUSD:'SILVER'}
  f.env.FETCH=async input=>{
   const u=new URL(input)
-  if(u.searchParams.has('epics'))return Response.json({marketDetails:Object.values(epics).map(epic=>({instrument:{epic},snapshot:{bid:100,offer:102,marketStatus:'TRADEABLE',updateTimeUTC:new Date().toISOString()}}))})
+  if(u.searchParams.has('searchTerm')&&u.searchParams.get('searchTerm')!=='Dollar Index')return Response.json({markets:Object.values(epics).map(epic=>({epic,bid:100,offer:102,marketStatus:'TRADEABLE',updateTimeUTC:new Date().toISOString()}))})
   return original(input)
  }
  const source=createCandles(f.env,f.store),feed=createQuoteFeed(f.env)

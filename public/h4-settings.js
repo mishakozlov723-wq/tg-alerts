@@ -14,7 +14,10 @@
   function render() {
     const disabled = busy || !prefs
     el('h4Enabled').disabled = disabled
-    el('h4AtClose').disabled = disabled
+    const detailsDisabled = disabled || !prefs?.enabled
+    el('h4AtClose').disabled = detailsDisabled
+    el('h4Details').inert = detailsDisabled
+    el('h4Details').setAttribute('aria-disabled', String(detailsDisabled))
     el('h4Enabled').setAttribute('aria-checked', String(Boolean(prefs?.enabled)))
     el('h4AtClose').setAttribute('aria-checked', String(Boolean(prefs?.atClose)))
     el('p-settings').dataset.ready = String(Boolean(prefs))
@@ -33,7 +36,7 @@
         if (b.textContent !== text) b.textContent = text
         b.classList.toggle('on', selected.includes(value)); b.setAttribute('aria-pressed', String(selected.includes(value)))
         b.dataset.locked = String(locked)
-        b.disabled = disabled || (locked && !selected.includes(value))
+        b.disabled = detailsDisabled || (locked && !selected.includes(value))
         b.title = locked ? 'Requires access to this quote' : ''
       })
     }
@@ -69,7 +72,7 @@
     })
   }
   async function update(patch) {
-    if (busy || !prefs) return
+    if (busy || !prefs || (!prefs.enabled && !('enabled' in patch))) return
     const next = { ...prefs, ...patch }
     if (next.enabled && (!next.symbols.length || (!next.lead.length && !next.atClose))) return toast('Select an asset and a notification time first.')
     const previous = prefs
@@ -90,7 +93,13 @@
     } catch (e) { error = e.message }
     finally { loading = false; render() }
   }
-  el('h4Enabled').onclick = () => update({ enabled: !prefs.enabled })
+  el('h4Enabled').onclick = () => {
+    if (!prefs) return
+    const patch = { enabled: !prefs.enabled }
+    if (patch.enabled && !prefs.symbols.length) patch.symbols = ['EURUSD']
+    if (patch.enabled && !prefs.lead.length && !prefs.atClose) patch.atClose = true
+    update(patch)
+  }
   el('h4AtClose').onclick = () => update({ atClose: !prefs.atClose })
   el('h4Retry').onclick = load
   const visible = () => !document.hidden && !el('p-settings').classList.contains('hide')

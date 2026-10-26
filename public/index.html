@@ -157,7 +157,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
 </style>
 </head>
 <body>
-<div id="accessGate" class="access-gate hide"><div class="access-box"><div class="eyebrow">Retocker Access</div><h2>Enter access code.</h2><p>Get a one-time code in the access bot and enter it here.</p><form id="accessForm"><input id="accessCode" class="access-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required><button class="access-submit" type="submit">Continue</button></form><div id="accessStatus" class="access-status"></div></div></div>
+<div id="accessGate" class="access-gate hide"><div class="access-box"><div class="eyebrow">Retocker Access</div><h2>Enter access code.</h2><p>Get a one-time code in the access bot and enter it here.</p><form id="accessForm" novalidate><div class="access-code-wrap"><input id="accessCode" class="access-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" aria-label="Six-digit access code" required><div id="accessDigits" class="access-digits" aria-hidden="true"></div></div><button id="accessAction" class="access-submit" type="button"><span data-action="paste">Paste</span><span data-action="enter">Sign in</span></button></form><div id="accessStatus" class="access-status"></div></div></div>
 <div id="splash"><div id="introStage"></div></div>
 <div id="toast"></div>
 <div class="wrap">
@@ -175,7 +175,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
         <div id="chartFresh" role="status"></div><div id="chartStatus" role="status">Loading…</div>
         <button id="chartRetry" class="chart-action" hidden>Retry</button>
         <select id="chartExisting" aria-label="Existing alerts"><option value="">Select alert…</option></select>
-        <div id="chartTicket" hidden><label for="chartPrice">Alert price</label><input id="chartPrice" inputmode="decimal" autocomplete="off" aria-label="Alert price"><div class="chart-buttons"><button id="chartAdd" class="chart-action primary">Add alert</button><button id="chartDelete" class="chart-action" hidden>Delete alert</button><button id="chartCancel" class="chart-action">Cancel</button></div></div>
+        <div id="chartTicket" hidden><div class="chart-ticket-inner"><label for="chartPrice">Alert price</label><input id="chartPrice" inputmode="decimal" autocomplete="off" aria-label="Alert price"><div class="chart-buttons"><button id="chartAdd" class="chart-action primary">Add alert</button><button id="chartDelete" class="chart-action" hidden>Delete alert</button><button id="chartCancel" class="chart-action">Cancel</button></div><div class="field alert-note"><label for="chartNote">Notification text · optional</label><input id="chartNote" type="text" maxlength="200" placeholder="Add a note to this alert" autocomplete="off"></div></div></div>
       </section>
       <button id="manualToggle" type="button" aria-expanded="true" aria-controls="manualBody" hidden><span>Manual alert</span><span class="manual-chevron" aria-hidden="true"></span></button>
       <div id="manualBody" class="manual-body"><div class="manual-inner">
@@ -185,6 +185,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
       </div>
       <div class="chips" id="chips"></div>
       <button class="cta" id="create">Create alert</button>
+      <div class="field alert-note"><label for="alertNote">Notification text · optional</label><input id="alertNote" type="text" maxlength="200" placeholder="Add a note to this alert" autocomplete="off"></div>
       </div></div>
     </div>
     <div class="dbg hide" id="dbg">
@@ -238,10 +239,12 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
     <div class="setting-row"><div><b>H4 reminders</b></div><button id="h4Enabled" class="switch" type="button" role="switch" aria-checked="false" aria-label="H4 reminders" disabled></button></div>
     <div id="h4State" role="status" aria-live="polite">Loading settings…</div>
     <button id="h4Retry" class="hide" type="button">Retry</button>
+    <div id="h4Details" class="setting-details" inert aria-disabled="true">
     <div class="h4-group"><div class="eyebrow lbl">Assets</div><div class="opt" id="h4Assets"></div></div>
     <div class="h4-group"><div class="eyebrow lbl">Notify before (min)</div><div class="opt" id="h4Lead"></div></div>
     <div class="setting-row"><div><b>At candle close</b></div><button id="h4AtClose" class="switch" type="button" role="switch" aria-checked="true" aria-label="Notify at candle close" disabled></button></div>
     <div class="h4-group"><div class="eyebrow lbl">Next close</div><div id="h4Schedule"></div></div>
+    </div>
     <details class="chart-credits-settings"><summary>Credits</summary><div class="chart-credit">TradingView Lightweight Charts™ · Copyright (с) 2025 <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView, Inc.</a> · <a href="/lightweight-charts-LICENSE.txt">Apache 2.0</a></div><div class="chart-credit">Icons by <a href="https://hugeicons.com/" target="_blank" rel="noopener noreferrer">Hugeicons</a> · <a href="/hugeicons-LICENSE.txt">MIT license</a></div></details>
   </section>
 </div>
@@ -263,6 +266,9 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
 <link rel="stylesheet" href="/hugeicons.css">
 <script defer src="/platform-controls.js"></script>
 <script src="/intro.js"></script>
+<script src="/access-code.js"></script>
+<script src="/alert-motion.js"></script>
+<link rel="stylesheet" href="/alert-refinements.css">
 <script>
 const tg = window.Telegram?.WebApp
 if (tg?.initData) {
@@ -310,20 +316,21 @@ function recoverAccess() {
   return accessRecovery
 }
 const ACCESS_KEY = 'retocker.access.alerts.v1'
-const savedAccess = localStorage.getItem(ACCESS_KEY)
+let savedAccess
+try { savedAccess = localStorage.getItem(ACCESS_KEY) } catch {}
 if (savedAccess) H['x-access-token'] = savedAccess
 async function ensureAccess(authApi) {
   if (!authApi) { $('#accessStatus').textContent = 'Access server is not configured.'; showAccessGate(); return false }
   if (H['x-access-token']) { const check = await api('/api/access/check', { signal: AbortSignal.timeout(10000) }); if (check.ok) return true; try { localStorage.removeItem(ACCESS_KEY) } catch {} delete H['x-access-token'] }
-  showAccessGate()
-  const form = $('#accessForm'); const input = $('#accessCode'); const status = $('#accessStatus'); input.focus()
+  await showAccessGate()
+  const form = $('#accessForm'); const input = $('#accessCode'); const status = $('#accessStatus')
   if (!form.dataset.bound) {
     form.dataset.bound = '1'; let busy = false
-    form.onsubmit = async (e) => {
-      e.preventDefault(); if (busy) return
+    const control = window.AccessCode.bind({ form, input, status, tg, submit: async () => {
+      if (busy) return
       const code = input.value.trim()
       if (!/^\d{6}$/.test(code)) { status.textContent = 'Enter the 6-digit code.'; return }
-      busy = true; status.textContent = 'Checking code…'
+      busy = true; control.setBusy(true); status.textContent = 'Checking code…'
       try {
         const r = await fetch(authApi.replace(/\/$/, '') + '/api/verify-code', { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: 'alerts', code }) })
         const result = await r.json()
@@ -332,11 +339,11 @@ async function ensureAccess(authApi) {
           return
         }
         try { localStorage.setItem(ACCESS_KEY, result.token) } catch {}
-        H['x-access-token'] = result.token; $('#accessGate').classList.add('hide'); status.textContent = ''; input.value = ''
+        H['x-access-token'] = result.token; await hideAccessGate(); status.textContent = ''; control.reset()
         window.dispatchEvent(new Event('retocker-access-ready'))
       } catch { status.textContent = 'Network error or timeout. Try again; request a new code if it was already used.' }
-      finally { busy = false }
-    }
+      finally { busy = false; control.setBusy(false) }
+    } })
   }
   return new Promise((resolve) => window.addEventListener('retocker-access-ready', () => resolve(true), { once: true }))
 }
@@ -453,10 +460,12 @@ function renderChips() {
 $('#create').onclick = async () => {
   const level = readLevel()
   if (!isFinite(level)) return toast('Enter a price level')
-  const r = await api('/api/alerts', { method: 'POST', body: JSON.stringify({ symbol: sym, level }) })
+  const note = $('#alertNote').value
+  const r = await api('/api/alerts', { method: 'POST', body: JSON.stringify({ symbol: sym, level, note }) })
   if (r.error === 'limit') return toast(`Limit reached: ${r.max} active alerts. Delete one first.`)
   if (r.error) return toast('Error: ' + r.error)
   toast(`Alert set · ${sym} ${level}`); animateLevel(0, 2300, true)
+  if ($('#alertNote').value === note) $('#alertNote').value = ''
   window.PriceChart?.refreshAlerts()
 }
 
@@ -483,6 +492,7 @@ function filterAlerts(list, status, asset) {
 $('#alertFilterStatus').onchange = () => renderAlerts()
 $('#alertFilterAsset').onchange = () => renderAlerts()
 function renderAlerts() {
+  const settleMotion = window.AlertMotion.capture($('#alist'))
   const assetFilter = $('#alertFilterAsset'), previous = assetFilter.value
   const assets = [...new Set([...Object.keys(cfg?.symbols || {}), ...alertsCache.map(a => a.symbol)])].sort()
   assetFilter.replaceChildren(new Option('All assets', 'all'), ...assets.map(s => new Option(s, s)))
@@ -501,11 +511,13 @@ function renderAlerts() {
     try {
       const result = await api('/api/alerts/' + b.dataset.id, { method: 'DELETE' })
       if (!result.ok) throw new Error(result.error || 'Could not delete alert')
+      await window.AlertMotion.remove(b.closest('.item'))
       noteDrafts.delete(String(b.dataset.id)); await loadAlerts()
     } catch { toast('Could not delete alert. Try again.') }
   })
   $('#alist').querySelectorAll('.acts .ed').forEach((b) => b.onclick = () => editAlert(b.dataset.id))
   for (const id of noteDrafts.keys()) editAlert(id, false)
+  settleMotion()
   if (focused?.startsWith('note-')) {
     const input = document.getElementById(focused)
     input?.focus(); if (input && selection != null) input.setSelectionRange(selection, selection)
@@ -513,6 +525,7 @@ function renderAlerts() {
 }
 
 function editAlert(id, focus = true) {
+  const settleMotion = focus ? window.AlertMotion.capture($('#alist')) : () => {}
   const a = alertsCache.find((x) => String(x.id) === String(id))
   const row = $('#alist').querySelector(`.item[data-id="${id}"]`)
   if (!a || !row) return
@@ -525,7 +538,8 @@ function editAlert(id, focus = true) {
     <div class="field"><label for="note-${a.id}">Notification text</label>
       <input type="text" id="note-${a.id}" maxlength="200" placeholder="e.g. Upper boundary taken" value="${esc(draft.value)}"></div>
     <div class="erow"><button class="ed" data-a="cancel">Cancel</button><button class="ed save" data-a="save">Save</button></div>`
-  const inp = row.querySelector('input'); if (focus) inp.focus()
+  const inp = row.querySelector('input'); if (focus) inp.focus({ preventScroll: true })
+  settleMotion()
   inp.oninput = () => { draft.value = inp.value }
   const saveButton = row.querySelector('[data-a=save]')
   saveButton.disabled = draft.saving
@@ -641,13 +655,28 @@ function reveal() {
   document.body.classList.add('ready')
   setTimeout(() => $('#splash')?.remove(), 1400)
 }
-function showAccessGate() {
-  $('#accessGate').classList.remove('hide')
-  // Login needs user input: never wait for appReady or the intro to finish.
+async function showAccessGate() {
+  // Wait for intro only, never appReady (which itself waits for authentication).
+  await introDone
+  const gate = $('#accessGate')
+  document.querySelector('.wrap').inert = true
+  document.querySelector('.tabs').inert = true
+  gate.classList.remove('hide'); gate.inert = false
   reveal()
-  $('#splash')?.remove()
+  requestAnimationFrame(() => gate.classList.add('is-visible'))
 }
-const introDone = window.playIntro($('#introStage'), 'combo').catch(() => {})
+async function hideAccessGate() {
+  const gate = $('#accessGate')
+  gate.inert = true; gate.classList.remove('is-visible')
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) await new Promise(r => setTimeout(r, 320))
+  gate.classList.add('hide')
+  document.querySelector('.wrap').inert = false
+  document.querySelector('.tabs').inert = false
+}
+const introDone = Promise.race([
+  Promise.resolve().then(() => window.playIntro($('#introStage'), 'combo')).catch(() => {}),
+  new Promise(resolve => setTimeout(resolve, 15000))
+])
 let appOk
 const appReady = new Promise((r) => (appOk = r))
 function whenReady() { appOk() }

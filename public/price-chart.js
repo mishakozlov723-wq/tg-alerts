@@ -5,28 +5,40 @@
   let chart, series, api, getQuote, symbol, tf = 'H4', rows = [], hasMore = false, busy = false, generation = 0
   let chosen, draft, lines = [], alerts = [], active = false, loadedAt = 0, lastLive = 0, listVersion = 0, historyStale = true
   let candidate = null, holding = false, hold, start, axisDrag, touchActive = false, multiTouch = false, scaleBase = null, candidateTime = null, manualAsset = null, draftDrag = false, mouseHover = false
+  let ticketOpen = false, ticketTimer, mutating = false
+  function setTicket(open) {
+    const ticket = $('#chartTicket')
+    const wasOpen = ticketOpen
+    clearTimeout(ticketTimer); ticketOpen = open
+    ticket.inert = !open
+    if (open) {
+      ticket.hidden = false
+      void ticket.offsetHeight
+      ticket.classList.add('is-open')
+    } else {
+      if (ticket.contains(document.activeElement)) $('#chartExisting').focus({ preventScroll: true })
+      ticket.classList.remove('is-open')
+      if (!wasOpen || matchMedia('(prefers-reduced-motion: reduce)').matches) ticket.hidden = true
+      else ticketTimer = setTimeout(() => { if (!ticketOpen) ticket.hidden = true }, 360)
+    }
+  }
   function draftHit(p) {
-    const price = candidate ?? (!$('#chartTicket').hidden ? Number($('#chartPrice').value.replace(',', '.')) : NaN)
+    const price = candidate ?? (ticketOpen ? Number($('#chartPrice').value.replace(',', '.')) : NaN)
     return Number.isFinite(price) && Math.abs((series.priceToCoordinate(price) ?? -1000) - p.y) <= 14
   }
   function lineHit(p) {
-    if (draftHit(p)) return true
+    // A pointer-down never selects a saved line. Only a previous explicit tap or
+    // dropdown selection unlocks the current draft; every other line stays fixed.
+    if (mutating || !ticketOpen) return false
     const width = $('#chartCanvas').clientWidth - chart.priceScale('right').width()
     if (p.x < 0 || p.x >= width || p.y >= $('#chartCanvas').clientHeight - 28) return false
-    const hit = ownAlerts().reduce((best, a) => {
-      const distance = Math.abs((series.priceToCoordinate(a.level) ?? -1000) - p.y)
-      return distance <= 14 && (!best || distance < best.distance) ? { a, distance } : best
-    }, null)
-    if (!hit) return false
-    chart.priceScale('right').applyOptions({ autoScale: false })
-    selection(hit.a.level, hit.a)
-    return true
+    return draftHit(p)
   }
   function moveDraft(p) {
     const price = series.coordinateToPrice(clamp(p.y, 1, $('#chartCanvas').clientHeight - 29))
     if (!Number.isFinite(price) || price <= 0) return
-    candidate = price; paintDraft(price, 'Alert')
-    if (!$('#chartTicket').hidden) $('#chartPrice').value = price.toFixed(digits())
+    candidate = price; paintDraft(price, chosen ? `Alert #${chosen.id}` : 'New alert')
+    if (ticketOpen) $('#chartPrice').value = price.toFixed(digits())
     positionPlus()
   }
   const digits = () => ({ DXY: 3, GER40: 1, XAUUSD: 2, XAGUSD: 3 }[symbol] ?? 5)
@@ -54,21 +66,22 @@
   }
   function clearSelection() {
     endHold(); mouseHover = false; chosen = null; candidate = null; candidateTime = null
-    $('#chartTicket').hidden = true; $('#chartPlus').hidden = true
+    setTicket(false); $('#chartPlus').hidden = true
     if (draft) series.removePriceLine(draft)
     draft = null
     chart?.clearCrosshairPosition()
     if (series) paintAlerts()
   }
   function selection(price, alert) {
-    if (!Number.isFinite(price) || price <= 0) return
+    if (mutating || !Number.isFinite(price) || price <= 0) return
     mouseHover = false; chosen = alert || null; candidate = alert ? null : price
     $('#chartPrice').value = price.toFixed(digits())
-    $('#chartTicket').hidden = false; $('#chartPlus').hidden = true
+    setTicket(true); $('#chartPlus').hidden = true
+    $('#chartNote').value = alert?.note || ''
     $('#chartAdd').hidden = false; $('#chartAdd').textContent = 'Save alert'; $('#chartDelete').hidden = !chosen
     // Changes remain local until Save alert; retain chosen.id for PATCH.
     $('#chartPrice').readOnly = false
-    paintDraft(price, 'Alert'); paintAlerts()
+    paintDraft(price, chosen ? `Alert #${chosen.id}` : 'New alert'); paintAlerts()
   }
   function paintAlerts() {
     for (const line of lines) series.removePriceLine(line)
@@ -146,7 +159,7 @@
   }
   function point(e) { const r = $('#chartCanvas').getBoundingClientRect(); return { x:e.clientX-r.left, y:e.clientY-r.top } }
   function positionPlus() {
-    if (candidate === null || !$('#chartTicket').hidden) return
+    if (candidate === null || ticketOpen) return
     const y = series.priceToCoordinate(candidate), height = $('#chartCanvas').clientHeight - 28
     const plus = $('#chartPlus')
     plus.hidden = !Number.isFinite(y)
@@ -160,7 +173,8 @@
     const y = clamp(p.y, 1, $('#chartCanvas').clientHeight - 29)
     const price = series.coordinateToPrice(y)
     if (!Number.isFinite(price) || price <= 0) return
-    candidate = price; chosen = null; $('#chartTicket').hidden = true; paintDraft(price)
+    if (ticketOpen || mutating) return
+    candidate = price; chosen = null; paintDraft(price)
     candidateTime = chart.timeScale().coordinateToTime(p.x)
     if (!native && candidateTime !== null) chart.setCrosshairPosition(price, candidateTime, series)
     positionPlus()
@@ -184,25 +198,27 @@
       layout: { background: { color: '#191919' }, textColor: '#aaa', attributionLogo: false },
       grid: { vertLines: { color: palette.grid }, horzLines: { color: palette.grid } },
       timeScale: { timeVisible: true, secondsVisible: false, minBarSpacing: 2, maxBarSpacing: 24, shiftVisibleRangeOnNewBar: false }, rightPriceScale: { borderColor: '#444', minimumWidth: 68 },
-      crosshair: { mode: lib.CrosshairMode.Normal, vertLine: { color: palette.label, labelBackgroundColor: '#555551' }, horzLine: { color: palette.label, labelBackgroundColor: '#555551' } },
+      crosshair: { mode: lib.CrosshairMode.Normal, vertLine: { visible: false, labelVisible: false }, horzLine: { visible: false, labelVisible: false } },
       trackingMode: { exitMode: lib.TrackingModeExitMode.OnTouchEnd },
       kineticScroll: { mouse: false, touch: false },
       handleScroll: { vertTouchDrag: true, horzTouchDrag: true, pressedMouseMove: true }, handleScale: { pinch: true, axisPressedMouseMove: { price: false, time: true } } })
     series = chart.addSeries(lib.CandlestickSeries, { upColor: palette.light, downColor: palette.dark, borderVisible: false, wickUpColor: palette.light, wickDownColor: palette.dark, priceLineColor: palette.label, priceFormat: { type: 'price', precision: 5, minMove: .00001 } })
     // A tap may select an existing alert, but never creates a new candidate.
     chart.subscribeClick(p => {
-      if (candidate !== null || !p.point) return
+      if (mutating || ticketOpen || !p.point) return
       const hit = ownAlerts().find(a => Math.abs((series.priceToCoordinate(a.level) ?? -100) - p.point.y) <= 10)
-      if (hit) selection(hit.level, hit)
+      if (hit) { chart.priceScale('right').applyOptions({ autoScale: false }); selection(hit.level, hit) }
     })
     const canvas = $('#chartCanvas')
     canvas.addEventListener('contextmenu', e => e.preventDefault())
     // Native tracking owns long-press; saved/draft line hits are intercepted for editing.
     canvas.addEventListener('touchstart', e => {
+      if (mutating) { e.preventDefault(); e.stopImmediatePropagation(); return }
       touchActive = true; multiTouch = e.touches.length !== 1
       draftDrag = !multiTouch && lineHit(point(e.touches[0]))
       if (draftDrag) { e.preventDefault(); e.stopImmediatePropagation(); return }
-      if (multiTouch || $('#chartTicket').hidden) clearSelection()
+      if (multiTouch) { if (!ticketOpen) clearSelection(); else endHold(); return }
+      if (!ticketOpen) clearSelection()
       const range = chart.priceScale('right').getVisibleRange()
       if (range) chart.priceScale('right').applyOptions({ autoScale: false })
     }, { capture: true, passive: false })
@@ -224,13 +240,13 @@
     }, { capture: true, passive: false })
     canvas.addEventListener('touchcancel', () => { touchActive = false; multiTouch = false; clearSelection() }, { passive: true })
     chart.subscribeCrosshairMove(p => {
-      if (!active || multiTouch || draftDrag || !$('#chartTicket').hidden) return
+      if (!active || multiTouch || draftDrag || ticketOpen) return
       if (touchActive && p.point) moveCandidate(p.point, true)
       // Native tracking may emit an empty point on release. Keep the candidate.
       else if (candidate !== null) positionPlus()
     })
     canvas.addEventListener('pointerdown', e => {
-      if (e.pointerType === 'touch') return
+      if (e.pointerType === 'touch' || mutating) return
       endHold()
       if (!e.isPrimary || e.button > 0) return
       const p = point(e)
@@ -242,7 +258,8 @@
         start = { x:e.clientX, y:e.clientY, id:e.pointerId }
         canvas.setPointerCapture(e.pointerId); e.preventDefault(); return
       }
-      if ($('#chartTicket').hidden && candidate !== null) clearSelection()
+      if (ticketOpen) return
+      if (candidate !== null) clearSelection()
       chart.priceScale('right').applyOptions({ autoScale: false })
       start = { x:e.clientX, y:e.clientY, id:e.pointerId }
       hold = setTimeout(() => {
@@ -253,7 +270,7 @@
     canvas.addEventListener('pointermove', e => {
       if (e.pointerType === 'touch') return
       // Desktop hover is separate from touch tracking and press/drag selection.
-      if (e.pointerType === 'mouse' && window.matchMedia('(any-hover: hover) and (any-pointer: fine)').matches && !e.buttons && !start && !holding && !axisDrag && !touchActive && active && $('#chartTicket').hidden) {
+      if (e.pointerType === 'mouse' && window.matchMedia('(any-hover: hover) and (any-pointer: fine)').matches && !e.buttons && !start && !holding && !axisDrag && !touchActive && active && !ticketOpen) {
         const p = point(e), width = canvas.clientWidth - chart.priceScale('right').width()
         if (p.x >= 0 && p.x < width && p.y >= 0 && p.y < canvas.clientHeight - 28) {
           moveCandidate(p, true); mouseHover = candidate !== null
@@ -269,7 +286,7 @@
     canvas.addEventListener('lostpointercapture', () => endHold())
     // Keep the candidate when crossing from the canvas onto the sibling + button.
     canvas.parentElement.addEventListener('pointerleave', e => {
-      if (e.pointerType === 'mouse' && mouseHover && !holding && !draftDrag && $('#chartTicket').hidden) clearSelection()
+      if (e.pointerType === 'mouse' && mouseHover && !holding && !draftDrag && !ticketOpen) clearSelection()
     })
     $('#chartPlus').onclick = () => { if (candidate !== null) selection(candidate) }
     // Explicit price-axis drag works for both touch and mouse without stealing pane pan/pinch.
@@ -293,31 +310,43 @@
     axis.onpointerup = axis.onpointercancel = axis.onlostpointercapture = () => { axisDrag = null }
     axis.ondblclick = reset
     chart.timeScale().subscribeVisibleLogicalRangeChange(r => { if (r && r.from < 12 && hasMore) history(true) })
-    $('#chartExisting').onchange = e => { const a = ownAlerts().find(a => String(a.id) === e.target.value); if (a) selection(a.level,a) }
+    $('#chartExisting').onchange = e => { if (mutating) return; const a = ownAlerts().find(a => String(a.id) === e.target.value); if (a) selection(a.level,a); else clearSelection() }
     $('#chartPrice').oninput = () => {
       $('#chartAdd').hidden = false; $('#chartDelete').hidden = !chosen
       const price = Number($('#chartPrice').value.replace(',','.'))
       candidate = Number.isFinite(price) && price > 0 ? price : null
-      paintDraft(price, 'Alert')
+      paintDraft(price, chosen ? `Alert #${chosen.id}` : 'New alert')
     }
-    $('#chartCancel').onclick = clearSelection
+    $('#chartCancel').onclick = () => { if (!mutating) clearSelection() }
     $('#chartRetry').onclick = () => history()
     $('#chartReset').onclick = reset
     async function mutate(button, fn) {
+      if (mutating) return
       const asset = symbol, version = generation
-      button.disabled = true
-      try { await fn(); if (asset === symbol && version === generation) clearSelection(); await loadAlerts() }
-      catch (e) { status('Not confirmed: ' + e.message + '. Check alerts before retrying.'); await loadAlerts().catch(()=>{}) }
-      finally { button.disabled = false }
+      mutating = true; panel().dataset.saving = 'true'
+      const controls = [...panel().querySelectorAll('button,input,select')]
+      const previous = controls.map(el => el.disabled)
+      controls.forEach(el => { el.disabled = true })
+      try {
+        await fn()
+        if (asset === symbol && version === generation) clearSelection()
+        await loadAlerts()
+      } catch (e) {
+        status('Not confirmed: ' + e.message + '. Check alerts before retrying.')
+        await loadAlerts().catch(()=>{})
+      } finally {
+        mutating = false; panel().dataset.saving = 'false'
+        controls.forEach((el, i) => { el.disabled = previous[i] })
+      }
     }
     $('#chartAdd').onclick = e => mutate(e.target, async () => {
       const value = $('#chartPrice').value.trim().replace(',','.'), level = Number(value)
       if (!/^\d+(?:\.\d+)?$/.test(value) || !Number.isFinite(level) || level <= 0) throw new Error('Enter a positive price')
-      await call(chosen ? '/api/alerts/'+chosen.id : '/api/alerts', { method:chosen ? 'PATCH' : 'POST', body:JSON.stringify({ symbol, level:Number(level.toFixed(digits())) }) })
+      await call(chosen ? '/api/alerts/'+chosen.id : '/api/alerts', { method:chosen ? 'PATCH' : 'POST', body:JSON.stringify({ symbol, level:Number(level.toFixed(digits())), note:$('#chartNote').value }) })
     })
     $('#chartDelete').onclick = e => { if (chosen) return mutate(e.target, () => call('/api/alerts/'+chosen.id, {method:'DELETE'})) }
     $('#chartFrames').querySelectorAll('button').forEach(b => b.onclick = () => {
-      if (b.dataset.tf === tf || busy) return
+      if (b.dataset.tf === tf || busy || mutating) return
       tf = b.dataset.tf; generation++; rows=[]; lastLive=0; hasMore=false; clearSelection(); series.setData([]); reset(); historyStale = true
       $('#chartFrames').querySelectorAll('button').forEach(x => x.classList.toggle('on',x===b)); history()
     })

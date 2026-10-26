@@ -68,7 +68,7 @@ test('API returns expired cached prices as stale, keeps purchased assets, and en
  const command=async([op,key])=>op==='GET'?(key==='tg-alerts-db'?JSON.stringify(main):key==='tg-alerts:quotes:v1'?raw:null):'OK'
  const secret='artificial-signing-key'
  const core=await createEngine({...env,ACCESS_SIGNING_SECRET:secret,LOCAL_STORE:{command},FETCH:f.FETCH})
- const token=uid=>{const b=Buffer.from(JSON.stringify({sub:uid,project:'alerts',exp:Date.now()+600000})).toString('base64url');return b+'.'+createHmac('sha256',secret).update(b).digest('hex')}
+ const token=uid=>{const b=Buffer.from(JSON.stringify({sub:uid,project:'alerts',iat:Date.now(),exp:Date.now()+600000})).toString('base64url');return b+'.'+createHmac('sha256',secret).update(b).digest('hex')}
  const call=async(path,uid='1')=>(await core.http(new Request('https://fixture/api/'+path,{headers:{'x-access-token':token(uid)}}))).json()
  const config=await call('config');assert.ok(config.symbols.DXY);assert.ok(config.symbols.XAGUSD)
  const prices=await call('prices');assert.ok(prices.DXY);assert.equal(prices.DXY.stale,true);assert.equal(prices.DXY.observedAt,f.feed.prices.DXY.observedAt)

@@ -19,7 +19,7 @@
       if (ticket.contains(document.activeElement)) $('#chartExisting').focus({ preventScroll: true })
       ticket.classList.remove('is-open')
       if (!wasOpen || matchMedia('(prefers-reduced-motion: reduce)').matches) ticket.hidden = true
-      else ticketTimer = setTimeout(() => { if (!ticketOpen) ticket.hidden = true }, 360)
+      else ticketTimer = setTimeout(() => { if (!ticketOpen) ticket.hidden = true }, 500)
     }
   }
   function draftHit(p) {

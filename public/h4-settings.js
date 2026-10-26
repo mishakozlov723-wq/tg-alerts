@@ -12,12 +12,15 @@
   }
   const toggle = (items, value) => items.includes(value) ? items.filter((x) => x !== value) : [...items, value]
   function render() {
-    const disabled = busy || !prefs
-    el('h4Enabled').disabled = disabled
-    const detailsDisabled = disabled || !prefs?.enabled
+    // Saving is an interaction lock, not an OFF state. Never dim the whole
+    // section (or its switches/chips) for the duration of a network request.
+    el('h4Enabled').disabled = !prefs
+    el('h4Enabled').setAttribute('aria-disabled', String(busy || !prefs))
+    const detailsDisabled = !prefs || !prefs.enabled
     el('h4AtClose').disabled = detailsDisabled
-    el('h4Details').inert = detailsDisabled
+    el('h4Details').inert = detailsDisabled || busy
     el('h4Details').setAttribute('aria-disabled', String(detailsDisabled))
+    el('h4NextClose').dataset.enabled = String(Boolean(prefs?.atClose))
     el('h4Enabled').setAttribute('aria-checked', String(Boolean(prefs?.enabled)))
     el('h4AtClose').setAttribute('aria-checked', String(Boolean(prefs?.atClose)))
     el('p-settings').dataset.ready = String(Boolean(prefs))

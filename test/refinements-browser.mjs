@@ -190,7 +190,55 @@ try {
   assert.equal(alerts[0].level,level)
   await phone.locator('#chartCancel').click()
   await phone.screenshot({path:process.env.QA_DIR?path.join(process.env.QA_DIR,'chart-mobile.png'):'/tmp/chart-mobile.png'})
+  // Stress a real chart/canvas/axis/+ crossing the fixed navigation. Spacers
+  // only provide scroll range; production DOM, styles and chart are unchanged.
+  async function checkNavLayer(view, viewport, touch) {
+    await view.setViewportSize(viewport)
+    await view.locator('.tabs [data-t=new]').click()
+    await view.waitForFunction(()=>!document.querySelector('#gbpChart').hidden)
+    await view.waitForTimeout(1200) // complete section-entry animations too
+    await view.evaluate(()=>{
+      for(const id of ['nav-test-before','nav-test-after'])document.getElementById(id)?.remove()
+      const before=document.createElement('div');before.id='nav-test-before';before.style.height='600px';document.querySelector('#gbpChart').before(before)
+      const after=document.createElement('div');after.id='nav-test-after';after.style.height='800px';document.querySelector('.wrap').append(after)
+      const nav=document.querySelector('.tabs').getBoundingClientRect(),canvas=document.querySelector('#chartCanvas').getBoundingClientRect()
+      scrollTo(0,scrollY+canvas.top+170-(nav.top+nav.height/2))
+      const plus=document.querySelector('#chartPlus');plus.hidden=false;plus.style.top='170px';plus.style.right='68px'
+    })
+    await view.waitForTimeout(60)
+    const overlap=await view.evaluate(()=>{
+      const nav=document.querySelector('.tabs'),n=nav.getBoundingClientRect(),c=document.querySelector('#chartCanvas').getBoundingClientRect()
+      const hits=[]
+      for(const button of nav.querySelectorAll('button')) {
+        const b=button.getBoundingClientRect()
+        for(const y of [n.top+4,n.top+n.height/2,n.bottom-3]) {
+          const hit=document.elementFromPoint(b.x+b.width/2,y)
+          hits.push({tab:button.dataset.t,y,top:hit?.id||hit?.tagName,inNav:!!hit?.closest('.tabs')})
+        }
+      }
+      return {intersects:c.top<n.bottom&&c.bottom>n.top,bg:getComputedStyle(nav).backgroundColor,hits}
+    })
+    assert.equal(overlap.intersects,true,'Fixture must actually overlap the graph and navigation')
+    assert.ok(overlap.hits.every(h=>h.inNav),`Chart intercepted navigation at ${JSON.stringify(viewport)}: ${JSON.stringify(overlap.hits)}`)
+    assert.equal(overlap.bg,'rgb(25, 25, 25)','Navigation must fully mask graph lines, not let them bleed through')
+    await view.screenshot({path:path.join(process.env.QA_DIR||'/tmp',`nav-layer-${viewport.width}x${viewport.height}.png`)})
+    // Authentication overlays still outrank navigation; do not raise tabs above
+    // access/intro/modal layers just to solve the chart overlap.
+    await view.evaluate(()=>{const gate=document.querySelector('#accessGate');gate.inert=false;gate.classList.remove('hide');gate.classList.add('is-visible')})
+    assert.equal(await view.evaluate(()=>{const n=document.querySelector('.tabs').getBoundingClientRect();return !!document.elementFromPoint(100,n.top+10)?.closest('#accessGate')}),true)
+    await view.evaluate(()=>{const gate=document.querySelector('#accessGate');gate.inert=true;gate.classList.add('hide');gate.classList.remove('is-visible')})
+    const settings=await view.locator('.tabs [data-t=settings]').boundingBox()
+    const x=settings.x+settings.width/2,y=settings.y+settings.height/2
+    if(touch)await view.touchscreen.tap(x,y);else await view.mouse.click(x,y)
+    await view.waitForFunction(()=>!document.querySelector('#p-settings').classList.contains('hide'))
+    assert.equal(await view.locator('.tabs [data-t=settings]').evaluate(e=>e.classList.contains('on')),true)
+    await view.evaluate(()=>{document.querySelector('#nav-test-before')?.remove();document.querySelector('#nav-test-after')?.remove()})
+  }
+  await checkNavLayer(phone,{width:390,height:640},true)
+  await checkNavLayer(phone,{width:390,height:844},true) // expanded/fullscreen
+  await checkNavLayer(phone,{width:844,height:390},true) // rotation
+  await checkNavLayer(page,{width:1000,height:700},false)
   assert.deepEqual(errors,[])
-  console.log('PASS: intro-first; animated paste/manual fallback; explicit login/errors; real chart selected-only mouse/touch drag; no crosshair; centered compact plus; notes on create/edit/manual; smooth close/delete; settings disabled/rollback; reduced motion; mobile layout. Synthetic APIs, not production or physical Telegram.')
+  console.log('PASS: intro-first; animated paste/manual fallback; explicit login/errors; real chart selected-only mouse/touch drag; no crosshair; centered compact plus; notes on create/edit/manual; smooth close/delete; settings disabled/rollback; reduced motion; mobile layout; chart under navigation on scroll/fullscreen/rotation with working mouse/touch tabs and access overlay. Synthetic APIs, not production or physical Telegram.')
   await mobile.close();await context.close()
 } finally { await browser.close();await new Promise(resolve=>server.close(resolve)) }

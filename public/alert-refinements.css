@@ -17,4 +17,9 @@
 #chartPlus::after{content:'';-webkit-mask:none;mask:none;display:block;position:absolute;inset:0;margin:auto;width:12px;height:12px;background:linear-gradient(currentColor,currentColor) center/100% 1px no-repeat,linear-gradient(currentColor,currentColor) center/1px 100% no-repeat}
 @media(hover:hover) and (pointer:fine){#chartPlus{width:28px;height:28px}#chartPlus::before{width:18px;height:18px}#chartPlus::after{width:8px;height:8px}}
 #alist{overflow-anchor:none}#alist .item{overflow-wrap:anywhere}
+/* Keep chart canvases, price-axis hit areas and + in their own local layer.
+   Navigation covers scrolling content but stays below toast (9), access (80),
+   intro (100) and the platform picker (10000). Opaque fill masks chart lines. */
+#gbpChart{position:relative;z-index:0;isolation:isolate}
+.tabs{z-index:8;background:var(--bg)}
 @media(prefers-reduced-motion:reduce){.access-gate,.access-box,.access-submit,.access-submit span,.setting-details,#h4NextClose,#p-settings .switch,#p-settings .switch::after,#chartTicket,#chartTicket.is-open{transition:none!important}}

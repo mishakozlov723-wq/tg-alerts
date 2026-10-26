@@ -67,6 +67,9 @@ try {
   await context.route('**/*', route => route.request().url().startsWith(origin) ? route.continue() : route.abort())
   await context.addInitScript(() => {
     window.Telegram = { WebApp: { platform: 'tdesktop' } }
+    // This legacy token is accepted by the fixture API, but the rollout must
+    // still show the code gate instead of restoring it.
+    localStorage.setItem('retocker.access.alerts.v1','synthetic-token')
     window.clipboardMode = 'ok'
     Object.defineProperty(navigator, 'clipboard', { value: { readText: async () => { if (window.clipboardMode === 'deny') throw new Error('denied'); return window.clipboardMode === 'bad' ? 'not a code' : '123456' } } })
   })
@@ -77,6 +80,7 @@ try {
   assert.equal(await page.locator('#splash').count(), 1)
   await page.waitForFunction(() => document.querySelector('#accessGate').classList.contains('is-visible'))
   await page.locator('#splash').waitFor({ state: 'detached' })
+  assert.equal(await page.evaluate(()=>localStorage.getItem('retocker.access.alerts.v1')),null,'Legacy saved login was cleared')
   await page.locator('#accessAction').click()
   await page.waitForTimeout(100)
   assert.equal(await page.locator('#accessCode').inputValue(), '123456')
@@ -104,6 +108,7 @@ try {
   rejectNext = false; await page.locator('#accessAction').click()
   await page.waitForFunction(() => document.querySelector('#accessGate').classList.contains('hide'))
   await page.waitForFunction(() => window.fixtureSeries && document.querySelector('#chartExisting').options.length === 3)
+  assert.equal(await page.evaluate(()=>localStorage.getItem('retocker.access.alerts.v2')),'synthetic-token')
   assert.equal(await page.evaluate(() => window.fixtureChart.options().crosshair.vertLine.visible), false)
   assert.equal(await page.evaluate(() => window.fixtureChart.options().crosshair.horzLine.labelVisible), false)
   const canvas = page.locator('#chartCanvas')
@@ -238,7 +243,12 @@ try {
   await checkNavLayer(phone,{width:390,height:844},true) // expanded/fullscreen
   await checkNavLayer(phone,{width:844,height:390},true) // rotation
   await checkNavLayer(page,{width:1000,height:700},false)
+  const beforeReopen=redemptions
+  await phone.reload()
+  await phone.waitForFunction(()=>window.fixtureSeries&&document.querySelector('#chartExisting').options.length>1)
+  assert.equal(await phone.locator('#accessGate').evaluate(e=>e.classList.contains('hide')),true,'New login survives reopening')
+  assert.equal(redemptions,beforeReopen,'Reopening must not redeem another code')
   assert.deepEqual(errors,[])
-  console.log('PASS: intro-first; animated paste/manual fallback; explicit login/errors; real chart selected-only mouse/touch drag; no crosshair; centered compact plus; notes on create/edit/manual; smooth close/delete; settings disabled/rollback; reduced motion; mobile layout; chart under navigation on scroll/fullscreen/rotation with working mouse/touch tabs and access overlay. Synthetic APIs, not production or physical Telegram.')
+  console.log('PASS: one-time old-login reset/new-login persistence; intro-first; animated paste/manual fallback; explicit login/errors; real chart selected-only mouse/touch drag; no crosshair; centered compact plus; notes on create/edit/manual; smooth close/delete; settings disabled/rollback; reduced motion; mobile layout; chart under navigation on scroll/fullscreen/rotation with working mouse/touch tabs and access overlay. Synthetic APIs, not production or physical Telegram.')
   await mobile.close();await context.close()
 } finally { await browser.close();await new Promise(resolve=>server.close(resolve)) }

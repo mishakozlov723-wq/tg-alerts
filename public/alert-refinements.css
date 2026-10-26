@@ -5,7 +5,7 @@
 .setting-details[aria-disabled=false] #h4NextClose[data-enabled=false]{opacity:.34;filter:grayscale(1)}
 #p-settings .switch{transition:border-color .24s ease,opacity .32s ease}
 #p-settings .switch::after{transition:transform .26s cubic-bezier(.22,1,.36,1),background-color .24s ease}
-.access-gate{opacity:0;transition:opacity .32s ease;pointer-events:none}.access-gate.is-visible{opacity:1;pointer-events:auto}.access-box{transform:translateY(12px);transition:transform .45s cubic-bezier(.22,.61,.36,1)}.access-gate.is-visible .access-box{transform:none}
+.access-gate{opacity:0;transition:opacity .5s ease;pointer-events:none}.access-gate.is-visible{opacity:1;pointer-events:auto}.access-box{opacity:0;transform:translateY(16px);transition:opacity .65s ease,transform .8s cubic-bezier(.22,.61,.36,1)}.access-gate.is-visible .access-box{opacity:1;transform:none}
 .access-code-wrap{position:relative}.access-digits{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;overflow:hidden;gap:0;font-family:var(--num);font-size:28px;letter-spacing:.22em}.access-code.is-animating{color:transparent;caret-color:transparent}.access-code.is-animating::selection{background:none}
 .access-submit{font-family:'Poppins',-apple-system,'Segoe UI',sans-serif;position:relative;height:50px;padding:0;transition:opacity .22s ease,background .22s ease}.access-submit span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transition:opacity .25s ease,transform .3s cubic-bezier(.22,.61,.36,1)}.access-submit [data-action=enter]{opacity:0;transform:translateY(6px)}.access-submit[data-filled=true] [data-action=paste]{opacity:0;transform:translateY(-6px)}.access-submit[data-filled=true] [data-action=enter]{opacity:1;transform:none}.access-submit:disabled{opacity:.45;cursor:default}.access-status{line-height:1.7}
 /* The ticket's grid track animates its real height, keeping content below it stable. */
@@ -22,4 +22,4 @@
    intro (100) and the platform picker (10000). Opaque fill masks chart lines. */
 #gbpChart{position:relative;z-index:0;isolation:isolate}
 .tabs{z-index:8;background:var(--bg)}
-@media(prefers-reduced-motion:reduce){.access-gate,.access-box,.access-submit,.access-submit span,.setting-details,#h4NextClose,#p-settings .switch,#p-settings .switch::after,#chartTicket,#chartTicket.is-open{transition:none!important}}
+@media(prefers-reduced-motion:reduce){.rise{transition:none!important}.enter{animation:none!important}.access-gate,.access-box,.access-submit,.access-submit span,.setting-details,#h4NextClose,#p-settings .switch,#p-settings .switch::after,#chartTicket,#chartTicket.is-open{transition:none!important}}

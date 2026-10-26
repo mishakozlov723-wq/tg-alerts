@@ -285,7 +285,18 @@ async function api(u, o = {}) {
   if (!r.ok && (o.method || 'GET') === 'GET' && u !== '/api/access/check') throw new Error(result.error || 'Request failed')
   return result
 }
-let accessRecovery = null
+let accessRecovery = null, accessEntryDone = null, accessFinishJob = null
+function settleAccessEntry(ok) {
+  const done = accessEntryDone; accessEntryDone = null; done?.(ok)
+}
+function finishAccessEntry() {
+  if (accessFinishJob) return accessFinishJob
+  accessFinishJob = (async () => {
+    try { await hideAccessGate(); settleAccessEntry(true) }
+    catch { showAccessGate(); settleAccessEntry(false) }
+  })().finally(() => { accessFinishJob = null })
+  return accessFinishJob
+}
 function recoverAccess() {
   if (accessRecovery || !cfg?.authRequired) return accessRecovery
   delete H['x-access-token']; try { localStorage.removeItem(ACCESS_KEY) } catch {}
@@ -302,24 +313,26 @@ function recoverAccess() {
         renderTiles(); renderPrice(); renderChips()
         window.PriceChart?.select(curTab === 'new' ? sym : null)
         const reload = curTab === 'alerts' ? loadAlerts : curTab === 'news' ? loadNews : curTab === 'settings' ? () => window.H4Settings?.load() : curTab === 'live' ? () => window.LiveReminders?.load() : null
-        if (reload) Promise.resolve(reload()).catch(() => toast('Could not reload. Try the tab again.'))
+        if (reload) await Promise.resolve(reload()).catch(() => toast('Could not reload. Try the tab again.'))
         tick().catch(() => {})
+        if (accessEntryDone) await finishAccessEntry()
         return
       } catch {
         delete H['x-access-token']; try { localStorage.removeItem(ACCESS_KEY) } catch {}
         showAccessGate()
         $('#accessStatus').textContent = 'Could not refresh access. Enter a new code and try again.'
+        settleAccessEntry(false)
       }
     }
   })().finally(() => { accessRecovery = null })
-  accessRecovery.catch(() => { showAccessGate(); $('#accessStatus').textContent = 'Could not restore access. Reopen the app.' })
+  accessRecovery.catch(() => { showAccessGate(); $('#accessStatus').textContent = 'Could not restore access. Reopen the app.'; settleAccessEntry(false) })
   return accessRecovery
 }
 // One-time UI reauthentication rollout: do not import the previous saved login.
 // Keep this key stable after rollout; newly verified sessions still last 96h.
-const ACCESS_KEY = 'retocker.access.alerts.v2'
+const ACCESS_KEY = 'retocker.access.alerts.v3'
 let savedAccess
-try { localStorage.removeItem('retocker.access.alerts.v1'); savedAccess = localStorage.getItem(ACCESS_KEY) } catch {}
+try { localStorage.removeItem('retocker.access.alerts.v1'); localStorage.removeItem('retocker.access.alerts.v2'); savedAccess = localStorage.getItem(ACCESS_KEY) } catch {}
 if (savedAccess) H['x-access-token'] = savedAccess
 async function ensureAccess(authApi) {
   if (!authApi) { $('#accessStatus').textContent = 'Access server is not configured.'; showAccessGate(); return false }
@@ -341,8 +354,13 @@ async function ensureAccess(authApi) {
           return
         }
         try { localStorage.setItem(ACCESS_KEY, result.token) } catch {}
-        H['x-access-token'] = result.token; await hideAccessGate(); status.textContent = ''; control.reset()
+        H['x-access-token'] = result.token
+        // Resume hydration first. Keep the gate/busy state until bootstrap (or
+        // recovery) has rendered the entitled view, then cross-fade into it.
+        const entered = new Promise(resolve => { accessEntryDone = resolve })
+        status.textContent = 'Opening Alerts…'
         window.dispatchEvent(new Event('retocker-access-ready'))
+        if (await entered) { status.textContent = ''; control.reset() }
       } catch { status.textContent = 'Network error or timeout. Try again; request a new code if it was already used.' }
       finally { busy = false; control.setBusy(false) }
     } })
@@ -648,29 +666,72 @@ let ticking = false
 document.addEventListener('visibilitychange', () => { if (!document.hidden && cfg) tick().catch(() => {}) })
 window.addEventListener('online', () => { if (cfg) tick().catch(() => {}) })
 
-// intro: splash plays at least MIN ms, then fades out and the app rises in
-document.querySelectorAll('#p-new > *, .tabs').forEach((el, i) => { el.classList.add('rise'); el.style.setProperty('--d', (0.2 + i * 0.1) + 's') })
-let revealed = false
-function reveal() {
-  if (revealed) return; revealed = true
-  $('#splash').classList.add('out')
-  document.body.classList.add('ready')
-  setTimeout(() => $('#splash')?.remove(), 1400)
+// Intro dismissal and app entrance are separate: the app must not finish its
+// entrance behind the code gate before its authenticated content even exists.
+let revealed = false, accessGateOpen = false, gateShowJob = null, gateVersion = 0, splashExit = null
+const motionReduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches
+function prepareAppEntrance() {
+  const section = $('#p-' + curTab)
+  const targets = [...section.children, document.querySelector('.tabs')]
+  document.body.classList.remove('ready'); revealed = false
+  targets.forEach((el, i) => {
+    el.classList.remove('enter'); el.classList.add('rise')
+    el.style.setProperty('--d', (0.2 + i * 0.1) + 's')
+  })
 }
-async function showAccessGate() {
-  // Wait for intro only, never appReady (which itself waits for authentication).
-  await introDone
-  const gate = $('#accessGate')
-  document.querySelector('.wrap').inert = true
-  document.querySelector('.tabs').inert = true
-  gate.classList.remove('hide'); gate.inert = false
-  reveal()
-  requestAnimationFrame(() => gate.classList.add('is-visible'))
+// Same entrance timing for an existing valid session and a code-based login.
+document.querySelectorAll('#p-new > *, .tabs').forEach((el, i) => { el.classList.add('rise'); el.style.setProperty('--d', (0.2 + i * 0.1) + 's') })
+function dismissIntro() {
+  if (splashExit) return splashExit
+  const splash = $('#splash')
+  if (!splash) return Promise.resolve()
+  splash.classList.add('out')
+  if (motionReduced()) { splash.remove(); return (splashExit = Promise.resolve()) }
+  splashExit = new Promise(resolve => {
+    let ended = false
+    const done = () => { if (ended) return; ended = true; splash.remove(); resolve() }
+    splash.addEventListener('transitionend', e => { if (e.target === splash && e.propertyName === 'opacity') done() })
+    setTimeout(done, 1100) // event fallback for backgrounded WebViews
+  })
+  return splashExit
+}
+function reveal() {
+  dismissIntro()
+  if (revealed || accessGateOpen) return
+  revealed = true; document.body.classList.add('ready')
+}
+function showAccessGate() {
+  if (accessGateOpen) return gateShowJob || Promise.resolve()
+  accessGateOpen = true
+  const version = ++gateVersion
+  gateShowJob = (async () => {
+    // Never wait for appReady: it waits for authentication itself.
+    await introDone
+    if (version !== gateVersion) return
+    const gate = $('#accessGate')
+    prepareAppEntrance()
+    document.querySelector('.wrap').inert = true
+    document.querySelector('.tabs').inert = true
+    // Let the splash finish first, so the panel's entrance is actually visible.
+    await dismissIntro()
+    if (version !== gateVersion) return
+    gate.classList.remove('is-visible'); gate.classList.remove('hide'); gate.inert = false
+    // Commit the opacity-0 frame after display:none before starting a transition.
+    void gate.offsetHeight
+    if (motionReduced()) gate.classList.add('is-visible')
+    else requestAnimationFrame(() => { if (version === gateVersion && accessGateOpen) gate.classList.add('is-visible') })
+  })().finally(() => { gateShowJob = null })
+  return gateShowJob
 }
 async function hideAccessGate() {
-  const gate = $('#accessGate')
+  const gate = $('#accessGate'), version = ++gateVersion
+  // Data/entitlements are already rendered when this is called. Restart the
+  // ordinary staggered entrance now, not while the opaque gate covers the app.
+  prepareAppEntrance(); void document.querySelector('.wrap').offsetHeight
+  accessGateOpen = false; reveal()
   gate.inert = true; gate.classList.remove('is-visible')
-  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) await new Promise(r => setTimeout(r, 320))
+  if (!motionReduced()) await new Promise(r => setTimeout(r, 520))
+  if (version !== gateVersion) return
   gate.classList.add('hide')
   document.querySelector('.wrap').inert = false
   document.querySelector('.tabs').inert = false
@@ -681,7 +742,7 @@ const introDone = Promise.race([
 ])
 let appOk
 const appReady = new Promise((r) => (appOk = r))
-function whenReady() { appOk() }
+function whenReady() { appOk(); if (accessEntryDone) finishAccessEntry() }
 Promise.all([introDone, appReady]).then(() => setTimeout(reveal, 200))
 setTimeout(reveal, 15000)
 

@@ -315,9 +315,11 @@ function recoverAccess() {
   accessRecovery.catch(() => { showAccessGate(); $('#accessStatus').textContent = 'Could not restore access. Reopen the app.' })
   return accessRecovery
 }
-const ACCESS_KEY = 'retocker.access.alerts.v1'
+// One-time UI reauthentication rollout: do not import the previous saved login.
+// Keep this key stable after rollout; newly verified sessions still last 96h.
+const ACCESS_KEY = 'retocker.access.alerts.v2'
 let savedAccess
-try { savedAccess = localStorage.getItem(ACCESS_KEY) } catch {}
+try { localStorage.removeItem('retocker.access.alerts.v1'); savedAccess = localStorage.getItem(ACCESS_KEY) } catch {}
 if (savedAccess) H['x-access-token'] = savedAccess
 async function ensureAccess(authApi) {
   if (!authApi) { $('#accessStatus').textContent = 'Access server is not configured.'; showAccessGate(); return false }

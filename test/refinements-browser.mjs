@@ -14,7 +14,7 @@ const worker = readFileSync(path.join(root, 'cloudflare/worker.mjs'), 'utf8')
 const transform = worker.slice(worker.indexOf('    let html=await asset.text()') + '    let html=await asset.text()'.length, worker.indexOf('    return new Response(html,'))
 html = vm.runInNewContext('let html = source;\n' + transform + '\nhtml', { source: html })
 assert.ok(html.includes("fetch('/api/access/redeem'"))
-let seq = 3, rejectNext = false, failSettings = false, redemptions = 0
+let seq = 3, rejectNext = false, failSettings = false, redemptions = 0, configDelay = 0
 let alerts = [
   { id: 1, symbol: 'EURUSD', level: 1.1005, dir: 'reach', status: 'active', note: 'first note' },
   { id: 2, symbol: 'EURUSD', level: 1.1015, dir: 'reach', status: 'active', note: 'second note' }
@@ -27,7 +27,7 @@ const server = http.createServer(async (req, res) => {
   const b = raw ? JSON.parse(raw) : {}
   if (u.pathname.startsWith('/api/')) {
     if (u.pathname === '/api/access/redeem') { redemptions++; return rejectNext ? send({ error: 'invalid_or_expired_code' }, 401) : send({ token: 'synthetic-token' }) }
-    if (u.pathname === '/api/config') return send({ authRequired: true, authApi: '/local-access', mock: false, symbols: { EURUSD: { digits: 5, pip: .0001 }, GBPUSD: { digits: 5, pip: .0001 } } })
+    if (u.pathname === '/api/config') { if (configDelay && req.headers['x-access-token']) await new Promise(r=>setTimeout(r,configDelay)); return send({ authRequired: true, authApi: '/local-access', mock: false, symbols: { EURUSD: { digits: 5, pip: .0001 }, GBPUSD: { digits: 5, pip: .0001 } } }) }
     if (u.pathname === '/api/access/check') return send({ ok: req.headers['x-access-token'] === 'synthetic-token' })
     if (u.pathname === '/api/prices') return send(Object.fromEntries(['EURUSD','GBPUSD'].map(s => [s, { price: 1.1008, dataTs: Date.now(), observedAt: Date.now(), tradeable: true, stale: false }])))
     if (u.pathname === '/api/events') return send([])
@@ -70,6 +70,14 @@ try {
     // This legacy token is accepted by the fixture API, but the rollout must
     // still show the code gate instead of restoring it.
     localStorage.setItem('retocker.access.alerts.v1','synthetic-token')
+    localStorage.setItem('retocker.access.alerts.v2','synthetic-token')
+    window.entryFrames=[]
+    function sampleEntry() {
+      const gate=document.querySelector('#accessGate'),box=document.querySelector('.access-box'),price=document.querySelector('#price')
+      if(gate&&box&&price)window.entryFrames.push({time:performance.now(),splash:!!document.querySelector('#splash'),gateHidden:gate.classList.contains('hide'),gate:+getComputedStyle(gate).opacity,box:+getComputedStyle(box).opacity,ready:document.body.classList.contains('ready'),price:+getComputedStyle(price.closest('.rise')||price).opacity,tiles:document.querySelector('#tiles').children.length})
+      requestAnimationFrame(sampleEntry)
+    }
+    requestAnimationFrame(sampleEntry)
     window.clipboardMode = 'ok'
     Object.defineProperty(navigator, 'clipboard', { value: { readText: async () => { if (window.clipboardMode === 'deny') throw new Error('denied'); return window.clipboardMode === 'bad' ? 'not a code' : '123456' } } })
   })
@@ -81,6 +89,12 @@ try {
   await page.waitForFunction(() => document.querySelector('#accessGate').classList.contains('is-visible'))
   await page.locator('#splash').waitFor({ state: 'detached' })
   assert.equal(await page.evaluate(()=>localStorage.getItem('retocker.access.alerts.v1')),null,'Legacy saved login was cleared')
+  await page.waitForTimeout(850)
+  const entranceFrames=await page.evaluate(()=>window.entryFrames)
+  assert.ok(entranceFrames.some(f=>!f.splash&&!f.gateHidden&&f.gate<.05),'Panel has a committed invisible starting frame after the splash')
+  assert.ok(entranceFrames.some(f=>!f.splash&&f.gate>.1&&f.gate<.9&&f.box>.01&&f.box<.99),'Panel has visible intermediate fade/slide frames, not a spawn behind the splash')
+  assert.equal(await page.evaluate(()=>document.body.classList.contains('ready')),false,'Main entrance is reserved until authentication/rendering')
+  assert.equal(await page.evaluate(()=>localStorage.getItem('retocker.access.alerts.v2')),null)
   await page.locator('#accessAction').click()
   await page.waitForTimeout(100)
   assert.equal(await page.locator('#accessCode').inputValue(), '123456')
@@ -105,10 +119,22 @@ try {
   await page.locator('#accessCode').fill('111111');await page.waitForTimeout(600)
   assert.equal(await page.locator('#accessCode').inputValue(),'111111','Typing cancels stale paste animation')
   assert.equal(await page.locator('#accessDigits span').count(),0)
-  rejectNext = false; await page.locator('#accessAction').click()
+  rejectNext = false; configDelay=800
+  const loginStart=await page.evaluate(()=>performance.now())
+  await page.locator('#accessAction').click()
+  await page.waitForTimeout(200)
+  assert.equal(await page.locator('#accessAction').isDisabled(),true,'Keep the consumed-code form busy through delayed hydration')
+  assert.equal(await page.locator('#accessGate').evaluate(e=>e.classList.contains('is-visible')),true)
+  assert.equal(await page.evaluate(()=>document.body.classList.contains('ready')),false)
   await page.waitForFunction(() => document.querySelector('#accessGate').classList.contains('hide'))
   await page.waitForFunction(() => window.fixtureSeries && document.querySelector('#chartExisting').options.length === 3)
-  assert.equal(await page.evaluate(()=>localStorage.getItem('retocker.access.alerts.v2')),'synthetic-token')
+  configDelay=0
+  await page.waitForTimeout(1400)
+  const loginFrames=await page.evaluate(start=>window.entryFrames.filter(f=>f.time>=start),loginStart)
+  assert.ok(loginFrames.some(f=>f.ready&&f.gate>.05&&f.gate<.95),'Gate and hydrated view cross-fade')
+  assert.ok(loginFrames.some(f=>f.ready&&f.price>.05&&f.price<.95&&f.tiles===2),'Populated app uses the normal staggered rise entrance')
+  assert.ok(loginFrames.filter(f=>f.ready).every(f=>f.tiles===2),'Do not reveal before the authenticated tiles exist')
+  assert.equal(await page.evaluate(()=>localStorage.getItem('retocker.access.alerts.v3')),'synthetic-token')
   assert.equal(await page.evaluate(() => window.fixtureChart.options().crosshair.vertLine.visible), false)
   assert.equal(await page.evaluate(() => window.fixtureChart.options().crosshair.horzLine.labelVisible), false)
   const canvas = page.locator('#chartCanvas')
@@ -249,6 +275,6 @@ try {
   assert.equal(await phone.locator('#accessGate').evaluate(e=>e.classList.contains('hide')),true,'New login survives reopening')
   assert.equal(redemptions,beforeReopen,'Reopening must not redeem another code')
   assert.deepEqual(errors,[])
-  console.log('PASS: one-time old-login reset/new-login persistence; intro-first; animated paste/manual fallback; explicit login/errors; real chart selected-only mouse/touch drag; no crosshair; centered compact plus; notes on create/edit/manual; smooth close/delete; settings disabled/rollback; reduced motion; mobile layout; chart under navigation on scroll/fullscreen/rotation with working mouse/touch tabs and access overlay. Synthetic APIs, not production or physical Telegram.')
+  console.log('PASS: visible panel fade after intro; hydrated app cross-fade/rise with slow configuration; one-time v1/v2 reset/v3 persistence; intro-first; animated paste/manual fallback; explicit login/errors; real chart selected-only mouse/touch drag; no crosshair; centered compact plus; notes on create/edit/manual; smooth close/delete; settings disabled/rollback; reduced motion; mobile layout; chart under navigation on scroll/fullscreen/rotation with working mouse/touch tabs and access overlay. Synthetic APIs, not production or physical Telegram.')
   await mobile.close();await context.close()
 } finally { await browser.close();await new Promise(resolve=>server.close(resolve)) }

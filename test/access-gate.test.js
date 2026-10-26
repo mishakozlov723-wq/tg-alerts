@@ -18,10 +18,10 @@ function boot({ legacy = null, saved = null, valid = false, authApi = '/local-ac
         addEventListener() {}, querySelectorAll: () => [],
       })
     }
-    return elements.get(id)
+    const result = elements.get(id); result.children ||= []; return result
   }
-  const storage = new Map(saved ? [['retocker.access.alerts.v2', saved]] : [])
-  if (legacy) storage.set('retocker.access.alerts.v1', legacy)
+  const storage = new Map(saved ? [['retocker.access.alerts.v3', saved]] : [])
+  if (legacy) { storage.set('retocker.access.alerts.v1', legacy); storage.set('retocker.access.alerts.v2', legacy) }
   if (cached) storage.set('retocker.quotes.display.v1', cached)
   const timers = [], requests = [], listeners = new Map(), errors = []
   const window = {
@@ -105,7 +105,7 @@ for (const saved of [null, 'expired-test-token']) {
     assert.notEqual(app.element('#accessCode').focused, true, 'Do not open the keyboard before user action')
     assert.equal(app.element('#splash').classList.contains('out'), true)
     assert.equal(app.requests.includes('/api/prices'), false, 'Protected bootstrap must wait for login')
-    assert.equal(app.storage.has('retocker.access.alerts.v2'), false)
+    assert.equal(app.storage.has('retocker.access.alerts.v3'), false)
     app.element('#accessCode').value = '123456'
     await app.element('#accessForm').onsubmit({ preventDefault() {} })
     assert.equal(app.element('#accessStatus').textContent, 'Invalid or already used code.')
@@ -123,7 +123,7 @@ test('successful code entry resumes bootstrap without restoring the splash', asy
   await settle()
   assert.equal(app.element('#accessGate').classList.contains('hide'), true)
   assert.equal(app.element('#splash').classList.contains('out'), true)
-  assert.equal(app.storage.get('retocker.access.alerts.v2'), 'new-test-token')
+  assert.equal(app.storage.get('retocker.access.alerts.v3'), 'new-test-token')
   assert.ok(app.requests.includes('/api/prices'))
   assert.deepEqual(app.errors, [])
 })
@@ -141,11 +141,11 @@ test('expired session during polling opens one gate and resumes without replayin
   const app = boot({ saved: 'valid-test-token', valid: true, expirePrices: true, redeemedToken: 'replacement-token' })
   await settle()
   assert.equal(app.element('#accessGate').classList.contains('hide'), false)
-  assert.equal(app.storage.has('retocker.access.alerts.v2'), false)
+  assert.equal(app.storage.has('retocker.access.alerts.v3'), false)
   app.element('#accessCode').value = '123456'
   await app.element('#accessForm').onsubmit({ preventDefault() {} }); await settle()
   assert.equal(app.element('#accessGate').classList.contains('hide'), true)
-  assert.equal(app.storage.get('retocker.access.alerts.v2'), 'replacement-token')
+  assert.equal(app.storage.get('retocker.access.alerts.v3'), 'replacement-token')
   assert.equal(app.requests.filter(u => u === '/local-access/api/verify-code').length, 1)
   assert.deepEqual(app.errors, [])
 })
@@ -201,18 +201,45 @@ test('one-time UI rollout ignores even valid old saved login, then retains the n
   const app = boot({ legacy: 'old-valid-token', valid: true, cached: snapshot, redeemedToken: 'fresh-after-rollout' })
   await settle()
   assert.equal(app.storage.has('retocker.access.alerts.v1'), false)
+  assert.equal(app.storage.has('retocker.access.alerts.v2'), false)
   assert.equal(app.element('#accessGate').classList.contains('hide'), false)
   assert.equal(app.requests.includes('/api/access/check'), false, 'Old login is never submitted to skip the new gate')
   assert.equal(app.requests.includes('/api/prices'), false)
   assert.equal(app.storage.get('retocker.quotes.display.v1'), snapshot, 'Do not clear unrelated storage')
   app.element('#accessCode').value = '123456'
   await app.element('#accessForm').onsubmit({ preventDefault() {} }); await settle()
-  assert.equal(app.storage.get('retocker.access.alerts.v2'), 'fresh-after-rollout')
-  const reopened = boot({ legacy: 'old-valid-token', saved: app.storage.get('retocker.access.alerts.v2'), valid: true })
+  assert.equal(app.storage.get('retocker.access.alerts.v3'), 'fresh-after-rollout')
+  const reopened = boot({ legacy: 'old-valid-token', saved: app.storage.get('retocker.access.alerts.v3'), valid: true })
   await settle()
   assert.equal(reopened.storage.has('retocker.access.alerts.v1'), false)
   assert.equal(reopened.element('#accessGate').classList.contains('hide'), true, 'A successful new login must not be cleared again')
   assert.ok(reopened.requests.includes('/api/access/check'))
   assert.ok(reopened.requests.includes('/api/prices'))
   assert.deepEqual([...app.errors,...reopened.errors], [])
+})
+
+
+test('successful redemption keeps the gate up until protected bootstrap has rendered', async () => {
+  const app = boot({ redeemedToken: 'new-test-token' }); await settle()
+  let releaseConfig
+  const delayedConfig = new Promise(resolve => { releaseConfig = resolve })
+  app.setFetch(async url => ({ ok: true, status: 200, json: async () => {
+    if (url.includes('verify-code')) return { token: 'new-test-token' }
+    if (url === '/api/config') return delayedConfig
+    if (url === '/api/prices') return {}
+    if (url.startsWith('/api/events')) return []
+    return {}
+  } }))
+  app.element('#accessCode').value = '123456'
+  const entered = app.element('#accessForm').onsubmit({ preventDefault() {} })
+  await settle()
+  assert.equal(app.element('#accessGate').classList.contains('hide'), false)
+  assert.equal(app.element('body').classList.contains('ready'), false, 'Entrance must not play behind the gate')
+  assert.equal(app.element('#accessStatus').textContent, 'Opening Alerts…')
+  releaseConfig({ authRequired: true, authApi: '/local-access', symbols: { EURUSD: { digits: 5, pip: .0001 } } })
+  await entered; await settle()
+  assert.equal(app.element('#accessGate').classList.contains('hide'), true)
+  assert.equal(app.element('body').classList.contains('ready'), true)
+  assert.equal(app.element('.wrap').inert, false)
+  assert.deepEqual(app.errors, [])
 })

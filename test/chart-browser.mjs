@@ -12,7 +12,7 @@ try {
  await page.goto(url); await page.locator('#splash').waitFor({state:'detached'})
  await page.locator('#chartStatus').filter({hasText:'Loading'}).waitFor({state:'hidden'})
  // Reset only this isolated fixture user's records, allowing reruns after a failed assertion.
- await page.evaluate(async()=>{const headers={'x-access-token':localStorage.getItem('retocker.access.alerts.v2')};for(const a of await fetch('/api/alerts',{headers}).then(r=>r.json()))await fetch('/api/alerts/'+a.id,{method:'DELETE',headers})})
+ await page.evaluate(async()=>{const headers={'x-access-token':localStorage.getItem('retocker.access.alerts.v3')};for(const a of await fetch('/api/alerts',{headers}).then(r=>r.json()))await fetch('/api/alerts/'+a.id,{method:'DELETE',headers})})
  await page.getByRole('button',{name:'GBPUSD',exact:false}).click();await page.getByRole('button',{name:'EURUSD',exact:false}).click()
  await page.locator('#chartStatus').filter({hasText:'Loading'}).waitFor({state:'hidden'})
  const canvas=page.locator('#chartCanvas');await canvas.scrollIntoViewIfNeeded()
@@ -30,7 +30,7 @@ try {
  await page.getByRole('textbox',{name:'Alert price',exact:true}).fill('1.30100')
  await page.getByRole('button',{name:'Save alert',exact:true}).click()
  await page.waitForFunction(()=>document.querySelector('#chartTicket').hidden)
- const stored=()=>page.evaluate(async id=>(await fetch('/api/alerts',{headers:{'x-access-token':localStorage.getItem('retocker.access.alerts.v2')}}).then(r=>r.json())).find(a=>String(a.id)===id),savedId)
+ const stored=()=>page.evaluate(async id=>(await fetch('/api/alerts',{headers:{'x-access-token':localStorage.getItem('retocker.access.alerts.v3')}}).then(r=>r.json())).find(a=>String(a.id)===id),savedId)
  assert.equal((await stored()).level,1.301)
  await canvas.scrollIntoViewIfNeeded();r=await canvas.boundingBox()
  let savedY=await page.evaluate(()=>window.fixtureSeries.priceToCoordinate(1.301))

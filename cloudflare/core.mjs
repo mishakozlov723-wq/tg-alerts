@@ -14,7 +14,7 @@ import { createCandles } from './candles.mjs'
 import { createNews } from './news.mjs'
 import { validateMain } from './storage.mjs'
 import { createMonitor, statusKeyboard } from './monitor.mjs'
-import { sampleFeedWatch } from './feed-watch.mjs'
+import { sampleFeedWatch, FEED_WARNING_DELAY_MS } from './feed-watch.mjs'
 
 export async function createEngine(env) {
 const fetch = env.FETCH || globalThis.fetch
@@ -778,7 +778,7 @@ return {
     await monitor.notify()
   },
   async probe() { return quoteFeed.probe() },
-  feedStatus() { return quoteFeed.status() },
+  feedStatus() { return {...quoteFeed.status(), notificationPolicy: { staleWarningDelayMs: FEED_WARNING_DELAY_MS }} },
   async stream(signal, dispatch) { return quoteFeed.stream(onTick, signal, dispatch) },
   async capital(dispatch) { return quoteFeed.capital(onTick, dispatch) },
   flushEvents,

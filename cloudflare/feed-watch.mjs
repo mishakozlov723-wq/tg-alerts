@@ -1,5 +1,7 @@
 // Notification hysteresis is separate from the strict 30s trading freshness gate.
 // Mutations are committed with the outbox by the caller before any network send.
+export const FEED_WARNING_DELAY_MS = 3 * 60 * 1000
+
 export function sampleFeedWatch(state, { now, open, recipients }) {
   const messages = []
   const before = JSON.stringify(state)
@@ -18,9 +20,9 @@ export function sampleFeedWatch(state, { now, open, recipients }) {
     if (stale.length) {
       delete s.goodSince
       s.badSince ??= now
-      if (!s.announced && now - s.badSince >= 60000 && (!s.lastWarning || now - s.lastWarning >= 3600000)) {
+      if (!s.announced && now - s.badSince >= FEED_WARNING_DELAY_MS && (!s.lastWarning || now - s.lastWarning >= 3600000)) {
         s.announced = true; s.lastWarning = now; s.symbols = stale
-        messages.push({ userId: uid, kind: 'warning', text: `⚠️ Fresh quotes unavailable for ${stale.join(', ')} for over a minute. Alerts on these instruments wait for fresh quotes; other instruments continue normally.` })
+        messages.push({ userId: uid, kind: 'warning', text: `⚠️ Fresh quotes unavailable for ${stale.join(', ')} for at least 3 minutes. Alerts on these instruments wait for fresh quotes; other instruments continue normally.` })
       }
     } else {
       delete s.badSince

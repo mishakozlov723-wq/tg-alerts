@@ -18,7 +18,7 @@ test('short stale episodes are silent; durable outage and sustained recovery pro
  assert.deepEqual(w.sample(false), [])
  w.advance(10000); assert.deepEqual(w.sample(true), [])
  w.advance(10000); assert.deepEqual(w.sample(false), [])
- w.advance(59000); assert.deepEqual(w.sample(false), [])
+ w.advance(179000); assert.deepEqual(w.sample(false), [])
  w.advance(1000); const warnings = w.sample(false)
  assert.equal(warnings.length, 1); assert.match(warnings[0].text, /EURUSD/)
  assert.doesNotMatch(warnings[0].text, /GBPUSD/)
@@ -29,11 +29,11 @@ test('short stale episodes are silent; durable outage and sustained recovery pro
  assert.deepEqual(w.sample(true), [])
  // Repeated pairs are bounded across engine recreation, not just admin pushes.
  w.restart(); w.advance(1000); w.sample(false)
- w.advance(61000); assert.deepEqual(w.sample(false), [])
+ w.advance(181000); assert.deepEqual(w.sample(false), [])
  w.advance(3600000); assert.equal(w.sample(false)[0].kind, 'warning')
 })
 test('recovery must stay fresh; closure and removed alerts do not pretend to be recovery', () => {
- const w = watcher(); w.sample(false); w.advance(60000); w.sample(false)
+ const w = watcher(); w.sample(false); w.advance(180000); w.sample(false)
  w.sample(true); w.advance(20000); w.sample(false)
  w.advance(20000); assert.deepEqual(w.sample(true), [])
  w.advance(20000); assert.deepEqual(w.sample(true, false), [])
@@ -77,13 +77,13 @@ test('real core/outbox deduplicates owner, persists cooldown, and leaves strict 
  const f = await fixture()
  try {
   await f.refresh(); f.advance(31000); await f.check(); assert.equal(f.sent.length,0)
-  f.advance(60000); await f.check(); assert.equal(f.sent.length,1)
+  f.advance(180000); await f.check(); assert.equal(f.sent.length,1)
   assert.match(f.sent[0].text,/⚠️.*GBPUSD/)
   assert.equal((await f.main()).alerts[0].status,'active')
   await f.restart(); f.advance(21000); await f.refresh(); await f.check()
   f.advance(30000); await f.refresh(); await f.check(); assert.equal(f.sent.length,2)
   assert.match(f.sent[1].text,/✅/)
-  f.advance(31000); await f.check(); f.advance(60000); await f.check()
+  f.advance(31000); await f.check(); f.advance(180000); await f.check()
   assert.equal(f.sent.length,2)
  } finally {f.close()}
 })
@@ -91,7 +91,7 @@ test('independent delivery cancels a warning after fresh quotes, without houseke
  const f = await fixture()
  try {
   f.advance(31000); await f.check(); f.reject = true
-  f.advance(60000); await f.check()
+  f.advance(180000); await f.check()
   assert.equal((await f.main()).events[0].delivery, 'pending')
   f.reject = false; f.advance(60000); await f.refresh(); await f.flush()
   assert.equal(f.sent.length, 0)
@@ -101,7 +101,7 @@ test('independent delivery cancels a warning after fresh quotes, without houseke
 test('independent delivery cancels recovery when quotes go stale again', async () => {
  const f = await fixture()
  try {
-  f.advance(31000); await f.check(); f.advance(60000); await f.check()
+  f.advance(31000); await f.check(); f.advance(180000); await f.check()
   assert.equal(f.sent.length, 1)
   await f.refresh(); await f.check()
   f.advance(30000); await f.refresh(); f.reject = true; await f.check()
@@ -115,7 +115,7 @@ test('warning rejected by Telegram is cancelled on recovery; no obsolete warning
  const f = await fixture()
  try {
   f.advance(31000); await f.check(); f.reject = true
-  f.advance(60000); await f.check(); assert.equal(f.sent.length,0)
+  f.advance(180000); await f.check(); assert.equal(f.sent.length,0)
   assert.equal((await f.main()).events[0].delivery,'pending')
   f.reject = false; f.advance(21000); await f.refresh(); await f.check()
   assert.equal((await f.main()).events[0].delivery,'expired')

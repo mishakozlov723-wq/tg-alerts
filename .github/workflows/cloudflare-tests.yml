@@ -1,7 +1,7 @@
 name: Cloudflare migration checks
 on:
   push:
-    branches: [cloudflare-migration]
+    branches: [main, cloudflare-migration]
   pull_request:
     paths:
       - 'cloudflare/**'
@@ -31,3 +31,9 @@ jobs:
       - run: npm run test:cloudflare
         env:
           WRANGLER_SEND_METRICS: 'false'
+      - name: Install browser
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Configure browser path
+        run: |
+          node -e "console.log('CHROMIUM_PATH=' + require('playwright-core').chromium.executablePath())" >> "$GITHUB_ENV"
+      - run: npm run test:browser

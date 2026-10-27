@@ -37,7 +37,8 @@ export function createQuoteFeed(env){
  async function checkpoint(store){if(revision===savedRevision)return;const n=revision;await store(['SET','tg-alerts:quotes:v1',JSON.stringify({version:1,identity,prices,mids,times})]);savedRevision=n}
  const unavailable=(symbols,list)=>{feedStatus.missing=[...new Set([...feedStatus.missing.filter(s=>!symbols.includes(s)),...list])]}
  const stamp=raw=>typeof raw==='string'&&/^\d+(\.\d+)?$/.test(raw)?Number(raw)*1000:Date.parse(raw)
- const marketOpen=()=>{const d=new Date(Date.now()),day=d.getUTCDay(),h=d.getUTCHours();return day!==6&&!(day===5&&h>=21)&&!(day===0&&h<22)}
+ const marketClock=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',hourCycle:'h23'})
+ const marketOpen=()=>{const p=Object.fromEntries(marketClock.formatToParts(Date.now()).map(x=>[x.type,x.value]));return p.weekday!=='Sat'&&!(p.weekday==='Fri'&&Number(p.hour)>=17)&&!(p.weekday==='Sun'&&Number(p.hour)<17)}
  async function get(path){const r=await fetch(host+path,{headers:{authorization:`Bearer ${env.OANDA_TOKEN}`,'accept-datetime-format':'UNIX'},signal:AbortSignal.timeout(8000)});if(!r.ok)throw new Error('OANDA_request_failed');return r.json()}
  async function discover(){
   if(!env.OANDA_TOKEN)throw new Error('OANDA_token_missing')

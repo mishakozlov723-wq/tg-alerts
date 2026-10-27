@@ -155,7 +155,7 @@ export function h4Message(event) {
   if (event.lead) return `⏱ ${label} · H4\nCandle closes at ${time} (${event.lead} min reminder).\n${source}`
   return `🔔 ${label} · H4\nCandle closed at ${time}.\n${source}`
 }
-export function createH4Runner({ getSettings, source, allowed, claim, deliver, clock = Date.now, onError = console.error }) {
+export function createH4Runner({ getSettings, source, allowed, claim, deliver, commit = null, clock = Date.now, onError = console.error }) {
   let busy = false
   return async function run() {
     if (busy) return
@@ -172,13 +172,14 @@ export function createH4Runner({ getSettings, source, allowed, claim, deliver, c
           if (!allowed(uid, event.symbol)) continue
           const key = `${uid}|${event.symbol}|${event.start}|${event.lead}`
           try {
-          if (!(await claim(key, clock(), { uid, settings: s }))) continue
+          if (!commit && !(await claim(key, clock(), { uid, settings: s }))) continue
           const current = getSettings()[uid]
           if (!current?.enabled || current.since !== s.since || !allowed(uid, event.symbol)) continue
           if (states[event.symbol].checkedAt && clock() - states[event.symbol].checkedAt > 90000) continue
           // A slow earlier delivery must not turn a pre-close reminder into an after-close one.
           if (clock() - event.at >= (event.lead ? 60000 : DELIVERY_WINDOW)) continue
-          await deliver(uid, h4Message(event), { event, settings: s })
+          if (commit) await commit(key, uid, h4Message(event), { event, settings: s })
+          else await deliver(uid, h4Message(event), { event, settings: s })
           } catch (e) { onError(`[h4] ${e.message}`) }
         }
       }

@@ -10,7 +10,7 @@ import { verifyAccessToken } from './shared/access-token.mjs'
 import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner } from './h4.js'
 import { createH4Store } from './h4-store.js'
 import { createLiveStore, LiveConflict } from './live-store.js'
-import { newReminder, liveIdValid, liveView, createLiveRunner } from './live.js'
+import { newReminder, editReminder, liveIdValid, liveView, createLiveRunner } from './live.js'
 
 // Silver is a paid quote from Capital.com (epic can be changed with CAPITAL_EPIC_XAGUSD, shift with OFFSET_XAGUSD).
 if (!SYMBOLS.XAGUSD) SYMBOLS.XAGUSD = { label: 'Silver', premium: true, pip: 0.01, digits: 3, base: 50, capital: process.env.CAPITAL_EPIC_XAGUSD || 'SILVER', offset: Number(process.env.OFFSET_XAGUSD || 0), duka: ['xagusd'] }
@@ -591,7 +591,7 @@ const server = http.createServer(async (req, res) => {
         let value = null
         if (req.method === 'PUT') {
           if (current.deliveries.some((d) => d.status === 'attempting')) throw new LiveConflict()
-          try { value = { ...newReminder(uid, id, b), createdAt: current.createdAt } }
+          try { value = editReminder(current, b) }
           catch (e) { return json(res, 400, { error: e.message }) }
         }
         if (req.method === 'PATCH') {

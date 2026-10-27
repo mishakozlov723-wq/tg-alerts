@@ -83,7 +83,7 @@ function input() {
 function summary() {
   if (el('liveForm').classList.contains('hide')) return
   try {
-    const { schedule } = normalizeLive({ ...input(), text: el('liveText').value || 'Reminder' }, now())
+    const { schedule } = normalizeLive({ ...input(), text: el('liveText').value || 'Reminder' }, now(), editing)
     el('liveSummary').textContent = `${schedule.length} notification${schedule.length === 1 ? '' : 's'} · until ${displayDate(schedule.at(-1), el('liveZone').value)}`
   } catch (e) { el('liveSummary').textContent = e.message }
   el('liveAddTime').disabled = el('liveTimes').children.length >= 6
@@ -120,7 +120,7 @@ el('liveForm').onsubmit = async (event) => {
   event.preventDefault()
   if (busy || uncertain) return
   const values = input()
-  try { normalizeLive(values, now()) } catch (e) { el('liveSummary').textContent = e.message; return }
+  try { normalizeLive(values, now(), editing) } catch (e) { el('liveSummary').textContent = e.message; return }
   const id = createId
   busy = true; controls(); renderList()
   try {

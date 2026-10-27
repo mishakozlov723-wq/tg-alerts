@@ -136,6 +136,11 @@ export function createQuoteFeed(env){
         if(snapshot.bid==null||snapshot.offer==null||!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask<bid){diagnostic.reason='invalid_price';continue}
         const raw=snapshot.updateTimeUTC
         const dataTs=typeof raw==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?$/.test(raw)?Date.parse(raw.endsWith('Z')?raw:raw+'Z'):NaN
+        // Whitelisted timing only: distinguish old provider snapshots from delayed polling.
+        // Never include raw responses, epics from configuration, prices or credentials.
+        diagnostic.sourceTime=Number.isFinite(dataTs)?dataTs:null
+        diagnostic.receivedAt=Date.now()
+        diagnostic.marketStatus=['TRADEABLE','CLOSED','EDIT','AUCTION','OFFLINE','SUSPENDED'].includes(snapshot.marketStatus)?snapshot.marketStatus:'UNKNOWN'
         seen.push(s)
         const side=env.CAPITAL_SIDE||'mid',v=side==='bid'?bid:side==='ask'?ask:(bid+ask)/2
         await dispatch(async()=>{
@@ -161,6 +166,6 @@ export function createQuoteFeed(env){
   async probe(){await discover();const d=await get(`/v3/accounts/${encodeURIComponent(account)}/pricing?instruments=${encodeURIComponent(PAIRS.join(','))}`);if(!Array.isArray(d.prices)||!['EUR_USD','GBP_USD'].every(s=>d.prices.some(p=>p.instrument===s)))throw new Error('broker_prices_unavailable');await pollCapital(null);if(capOn&&errors.capital)throw new Error('Capital_feed_unavailable');return {oanda:true,capital:capOn}},
   tradeable:s=>trade[s]===true,
   fresh,
-  status:()=>({mode:'stream',source,connected,lastMessage,displayIntervalMs:1000,capitalIntervalMs:1500,pricing:{oandaEnvironment:env.OANDA_ENV||'practice',oandaSide:env.OANDA_SIDE||'bid',capitalSide:env.CAPITAL_SIDE||'mid',quotes:Object.fromEntries(['EURUSD','GBPUSD'].filter(s=>prices[s]).map(s=>[s,{receivedAgeMs:Date.now()-prices[s].observedAt,sourceAgeMs:Date.now()-prices[s].dataTs,spreadPips:Number(prices[s].spreadPips?.toFixed(3)),tradeable:prices[s].tradeable}]))},errors:{...errors},capitalDiagnostics:{...capitalDiagnostics,nextRetryAt:capNext,consecutiveFailures:capFails},tradeable:{...trade}}),
+  status:()=>({mode:'stream',source,connected,lastMessage,displayIntervalMs:1000,capitalIntervalMs:1500,pricing:{oandaEnvironment:env.OANDA_ENV||'practice',oandaSide:env.OANDA_SIDE||'bid',capitalSide:env.CAPITAL_SIDE||'mid',quotes:Object.fromEntries(['EURUSD','GBPUSD'].filter(s=>prices[s]).map(s=>[s,{receivedAgeMs:Date.now()-prices[s].observedAt,sourceAgeMs:Date.now()-prices[s].dataTs,spreadPips:Number(prices[s].spreadPips?.toFixed(3)),tradeable:prices[s].tradeable}]))},errors:{...errors},capitalDiagnostics:{...capitalDiagnostics,quoteTimingVersion:1,quotes:Object.fromEntries(Object.entries(capitalDiagnostics.quotes||{}).map(([s,q])=>[s,{...q,sourceAgeMs:Number.isFinite(q.sourceTime)?Date.now()-q.sourceTime:null,receivedAgeMs:Number.isFinite(q.receivedAt)?Date.now()-q.receivedAt:null}])),nextRetryAt:capNext,consecutiveFailures:capFails},tradeable:{...trade}}),
  }
 }

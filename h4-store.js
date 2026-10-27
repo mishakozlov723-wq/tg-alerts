@@ -47,6 +47,13 @@ export async function createH4Store({ redis = null, file, clock = Date.now }) {
       }
       return value
     },
+    async wasClaimed(key) {
+      if (redis) {
+        const digest = crypto.createHash('sha256').update(key).digest('hex')
+        return (await redis(['GET', 'tg-alerts:{h4}:sent:' + digest])) !== null
+      }
+      return Boolean(state.sent[key])
+    },
     async claim(key, now, context) {
       if (redis) {
         const digest = crypto.createHash('sha256').update(key).digest('hex')

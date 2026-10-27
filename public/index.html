@@ -154,10 +154,12 @@ body.ready .rise{opacity:1;transform:none}
 /* Hide scrollbar chrome throughout the app; retain native scrolling and gestures. */
 html,body,body *{scrollbar-width:none;-ms-overflow-style:none}
 html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{display:none;width:0;height:0}
+
+#accessRetry[hidden]{display:none!important}
 </style>
 </head>
 <body>
-<div id="accessGate" class="access-gate hide"><div class="access-box"><div class="eyebrow">Retocker Access</div><h2>Enter access code.</h2><p>Get a one-time code in the access bot and enter it here.</p><form id="accessForm" novalidate><div class="access-code-wrap"><input id="accessCode" class="access-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" aria-label="Six-digit access code" required><div id="accessDigits" class="access-digits" aria-hidden="true"></div></div><button id="accessAction" class="access-submit" type="button"><span data-action="paste">Paste</span><span data-action="enter">Sign in</span></button></form><div id="accessStatus" class="access-status"></div></div></div>
+<div id="accessGate" class="access-gate hide"><div class="access-box"><div class="eyebrow">Retocker Access</div><h2>Enter access code.</h2><p>Get a one-time code in the access bot and enter it here.</p><form id="accessForm" novalidate><div class="access-code-wrap"><input id="accessCode" class="access-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" aria-label="Six-digit access code" required><div id="accessDigits" class="access-digits" aria-hidden="true"></div></div><button id="accessAction" class="access-submit" type="button"><span data-action="paste">Paste</span><span data-action="enter">Sign in</span></button></form><div id="accessStatus" class="access-status" role="status"></div><button id="accessRetry" class="access-submit" type="button" hidden>Retry loading Alerts</button></div></div>
 <div id="splash"><div id="introStage"></div></div>
 <div id="toast"></div>
 <div class="wrap">
@@ -282,7 +284,7 @@ async function api(u, o = {}) {
   const r = await fetch(u, { ...o, headers: { ...H, ...(o.headers || {}) } })
   if (r.status === 401 && u !== '/api/access/check') recoverAccess()
   const result = await r.json()
-  if (!r.ok && (o.method || 'GET') === 'GET' && u !== '/api/access/check') throw new Error(result.error || 'Request failed')
+  if (!r.ok && (o.method || 'GET') === 'GET' && !(u === '/api/access/check' && r.status === 401)) throw new Error(result.error || 'Request failed')
   return result
 }
 let accessRecovery = null, accessEntryDone = null, accessFinishJob = null
@@ -336,7 +338,7 @@ try { localStorage.removeItem('retocker.access.alerts.v1'); localStorage.removeI
 if (savedAccess) H['x-access-token'] = savedAccess
 async function ensureAccess(authApi) {
   if (!authApi) { $('#accessStatus').textContent = 'Access server is not configured.'; showAccessGate(); return false }
-  if (H['x-access-token']) { const check = await api('/api/access/check', { signal: AbortSignal.timeout(10000) }); if (check.ok) return true; try { localStorage.removeItem(ACCESS_KEY) } catch {} delete H['x-access-token'] }
+  if (H['x-access-token']) { const check = await api('/api/access/check', { signal: AbortSignal.timeout(10000) }); if (check.ok) return true; settleAccessEntry(false); try { localStorage.removeItem(ACCESS_KEY) } catch {} delete H['x-access-token'] }
   await showAccessGate()
   const form = $('#accessForm'); const input = $('#accessCode'); const status = $('#accessStatus')
   if (!form.dataset.bound) {
@@ -477,16 +479,26 @@ function renderChips() {
   })
 }
 
+let createBusy = false, createAttempt = null
+const requestId = () => globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c === 'x' ? r : (r&3|8)).toString(16) })
 $('#create').onclick = async () => {
+  if (createBusy) return
   const level = readLevel()
-  if (!isFinite(level)) return toast('Enter a price level')
-  const note = $('#alertNote').value
-  const r = await api('/api/alerts', { method: 'POST', body: JSON.stringify({ symbol: sym, level, note }) })
-  if (r.error === 'limit') return toast(`Limit reached: ${r.max} active alerts. Delete one first.`)
-  if (r.error) return toast('Error: ' + r.error)
-  toast(`Alert set · ${sym} ${level}`); animateLevel(0, 2300, true)
-  if ($('#alertNote').value === note) $('#alertNote').value = ''
-  window.PriceChart?.refreshAlerts()
+  if (!isFinite(level) || level <= 0) return toast('Enter a price level')
+  const note = $('#alertNote').value, payload = JSON.stringify({ symbol: sym, level, note })
+  if (createAttempt?.payload !== payload) createAttempt = { payload, id: requestId() }
+  createBusy = true; $('#create').disabled = true
+  try {
+    const r = await api('/api/alerts', { method: 'POST', signal: AbortSignal.timeout(15000), body: JSON.stringify({ ...JSON.parse(payload), requestId: createAttempt.id }) })
+    if (r.error === 'limit') return toast(`Limit reached: ${r.max} active alerts. Delete one first.`)
+    if (r.error) return toast('Error: ' + r.error)
+    createAttempt = null
+    toast(`Alert set · ${r.symbol || sym} ${level}`)
+    if (readLevel() === level) animateLevel(0, 2300, true)
+    if ($('#alertNote').value === note) $('#alertNote').value = ''
+    window.PriceChart?.refreshAlerts()
+  } catch { toast('Could not confirm the alert. Retry: the same request will not create a duplicate.') }
+  finally { createBusy = false; $('#create').disabled = false }
 }
 
 const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
@@ -590,8 +602,8 @@ async function loadNews() {
   const news = (await api('/api/news')).filter((n) => n.time > Date.now() - 3600e3)
   $('#nlist').innerHTML = news.length ? news.map((n) => `
     <div class="item" style="${settings.currencies.includes(n.currency) ? '' : 'opacity:.35'}"><div>
-      <div class="t"><span class="dotr"></span>${n.currency}<em>${n.title}</em></div>
-      <small>${new Date(n.time).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}${n.forecast ? ' · forecast ' + n.forecast : ''}${n.previous ? ' · prev ' + n.previous : ''}</small></div></div>`).join('') : '<div class="empty">No upcoming news.</div>'
+      <div class="t"><span class="dotr"></span>${esc(n.currency)}<em>${esc(n.title)}</em></div>
+      <small>${new Date(n.time).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}${n.forecast ? ' · forecast ' + esc(n.forecast) : ''}${n.previous ? ' · prev ' + esc(n.previous) : ''}</small></div></div>`).join('') : '<div class="empty">No upcoming news.</div>'
 }
 
 function toast(t) { const e = $('#toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => (e.style.display = 'none'), 5000) }
@@ -663,8 +675,8 @@ async function tick() {
   } finally { ticking = false }
 }
 let ticking = false
-document.addEventListener('visibilitychange', () => { if (!document.hidden && cfg) tick().catch(() => {}) })
-window.addEventListener('online', () => { if (cfg) tick().catch(() => {}) })
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { if (!appInitialized) bootstrap(); else if (cfg) tick().catch(() => {}) } })
+window.addEventListener('online', () => { if (!appInitialized) bootstrap(); else if (cfg) tick().catch(() => {}) })
 
 // Intro dismissal and app entrance are separate: the app must not finish its
 // entrance behind the code gate before its authenticated content even exists.
@@ -746,17 +758,21 @@ function whenReady() { appOk(); if (accessEntryDone) finishAccessEntry() }
 Promise.all([introDone, appReady]).then(() => setTimeout(reveal, 200))
 setTimeout(reveal, 15000)
 
+let appInitialized = false, bootstrapJob = null
 function showErr(e) {
-  const file = location.protocol === 'file:'
-  $('#tiles').innerHTML = `<div class="empty" style="line-height:1.6">${file ? 'You opened the file directly.' : 'Cannot reach the server.'}<br>Run <b>node server.js</b> in the project folder,<br>then open <b>http://localhost:3000</b></div>`
+  $('#tiles').innerHTML = '<div class="empty" style="line-height:1.6">Cannot reach the server. Your saved access is kept.<br><button id="bootRetry" type="button" class="chip">Retry loading Alerts</button></div>'
+  $('#bootRetry').onclick = () => bootstrap()
   console.error(e)
 }
-
-;(async () => { try {
+function bootstrap() {
+  if (appInitialized) return Promise.resolve()
+  if (bootstrapJob) return bootstrapJob
+  bootstrapJob = (async () => { try {
   cfg = await api('/api/config', { signal: AbortSignal.timeout(10000) })
   if (cfg.authRequired && !(await ensureAccess(cfg.authApi))) { whenReady(); return }
   // Refresh entitlements after code entry, before restoring any paid assets.
   if (cfg.authRequired) cfg = await api('/api/config', { signal: AbortSignal.timeout(10000) })
+  if (!cfg.symbols || cfg.error) throw new Error('Configuration unavailable')
   restoreQuotes()
   renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)
   window.PriceChart?.connect({ api, getQuote: asset => prices[asset] })
@@ -770,8 +786,20 @@ function showErr(e) {
     $('#dbg').querySelectorAll('button').forEach((b) => b.onclick = () => { api('/api/debug/move', { method: 'POST', body: JSON.stringify({ symbol: sym, pips: +b.dataset.p }) }); toast(`${sym} ${+b.dataset.p > 0 ? '+' : ''}${b.dataset.p} pips`) })
   }
   setInterval(() => tick().catch(() => {}), 400)
-  whenReady()
-} catch (e) { showErr(e); whenReady() } })()
+  appInitialized = true; $('#accessRetry').hidden = true; whenReady()
+  } catch (e) {
+    if (accessEntryDone) {
+      // Redemption already succeeded. Retain that token and the visible gate;
+      // retry hydration, never redeem another code or play an empty entrance.
+      $('#accessStatus').textContent = 'Code accepted. Could not load Alerts. Retry when the connection is available.'
+      $('#accessRetry').hidden = false
+    } else { showErr(e); whenReady() }
+  } })().finally(() => { bootstrapJob = null })
+  return bootstrapJob
+}
+$('#accessRetry').onclick = () => bootstrap()
+bootstrap()
+
 </script>
 <script src="/h4-settings.js"></script>
 <script type="module" src="/live-reminders.js"></script>

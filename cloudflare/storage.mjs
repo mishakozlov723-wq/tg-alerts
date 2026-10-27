@@ -8,6 +8,14 @@ export function validateMain(value){
  for(const k of ['settings','owned','orders','sentNews'])if(!d[k]||typeof d[k]!=='object'||Array.isArray(d[k]))throw new Error('invalid_import_'+k)
  if(!Array.isArray(d.alerts)||!Array.isArray(d.events)||!Number.isSafeInteger(d.seq)||d.seq<1)throw new Error('invalid_import_main')
  if(d.alerts.some(a=>!a||!Number.isSafeInteger(a.id)||typeof a.userId!=='string'||!['active','fired','paused'].includes(a.status)||!Number.isFinite(a.level)))throw new Error('invalid_import_alerts')
+ // One shared sequence serves alerts, events and orders. Repair a stale backup
+ // counter, but never silently accept ambiguous alert IDs.
+ const alertIds=d.alerts.map(a=>a.id)
+ if(new Set(alertIds).size!==alertIds.length)throw new Error('invalid_import_duplicate_alert_ids')
+ const occupied=[...alertIds,...d.events.map(e=>e?.id),...Object.values(d.orders).map(o=>o?.id)].filter(Number.isSafeInteger)
+ const highest=occupied.reduce((a,b)=>Math.max(a,b),0)
+ d.seq=Math.max(d.seq,highest+1)
+ if(!Number.isSafeInteger(d.seq)||d.seq>=Number.MAX_SAFE_INTEGER)throw new Error('invalid_import_sequence_exhausted')
  return d
 }
 export function createLocalStore(storage){

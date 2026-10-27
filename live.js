@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { normalizeLive, LIVE_GRACE_MS } from './public/live-time.js'
+import { normalizeLive, liveScheduleKey, LIVE_GRACE_MS } from './public/live-time.js'
 import { LiveConflict } from './live-store.js'
 const uuid = () => crypto.randomUUID()
 export const liveIdValid = (id) => typeof id === 'string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(id)
@@ -8,6 +8,12 @@ export function newReminder(uid, id, input, now = Date.now()) {
   const { config, schedule } = normalizeLive(input, now)
   return { id, userId: uid, config, enabled: true, createdAt: now, updatedAt: now, revision: uuid(),
     deliveries: schedule.map((at) => ({ at, status: 'pending' })) }
+}
+export function editReminder(current, input, now = Date.now()) {
+  const { config, schedule } = normalizeLive(input, now, current.config)
+  const same = liveScheduleKey(config) === liveScheduleKey(current.config)
+  return { ...current, config, updatedAt: now, revision: uuid(),
+    deliveries: same ? current.deliveries : schedule.map(at => ({ at, status: 'pending' })) }
 }
 export function liveView(row, now = Date.now()) {
   const outcomes = row.deliveries.map((d) => ({ ...d, status: d.status === 'pending' && now - d.at >= LIVE_GRACE_MS ? 'missed' : d.status === 'attempting' && now - d.attemptedAt > 60000 ? 'unknown' : d.status }))

@@ -8,13 +8,13 @@ import { verifyAccessToken } from '../shared/access-token.mjs'
 import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner } from '../h4.js'
 import { createH4Store } from '../h4-store.js'
 import { createLiveStore, LiveConflict } from '../live-store.js'
-import { newReminder, liveIdValid, liveView, createLiveRunner } from '../live.js'
+import { newReminder, editReminder, liveIdValid, liveView, createLiveRunner } from '../live.js'
 import { createQuoteFeed } from './quotes.mjs'
 import { createCandles } from './candles.mjs'
 import { createNews } from './news.mjs'
 import { validateMain } from './storage.mjs'
 import { createMonitor, statusKeyboard } from './monitor.mjs'
-import { sampleFeedWatch, FEED_WARNING_DELAY_MS } from './feed-watch.mjs'
+import { sampleFeedWatch, feedNoticeText, FEED_WARNING_DELAY_MS } from './feed-watch.mjs'
 
 export async function createEngine(env) {
 const fetch = env.FETCH || globalThis.fetch
@@ -120,6 +120,11 @@ async function deliverEvent(event) {
       event.feedNotice && !feedNoticeCurrent(event, feedRecipients())) {
     event.delivery = 'expired'; await save(); return event.delivery
   }
+  if (event.feedSymbols) {
+    const symbols = feedRecipients()[event.userId] || {}
+    event.feedSymbols = event.feedSymbols.filter(s => Object.hasOwn(symbols,s) && symbols[s] === (event.feedNotice === 'recovery'))
+    event.text = feedNoticeText(event.feedNotice,event.feedSymbols)
+  }
   event.delivery = 'attempting'
   await save() // Unknown outcomes after this checkpoint must never be blindly retried.
   if (BOT_TOKEN && /^\d+$/.test(event.userId)) {
@@ -176,6 +181,19 @@ async function deliverH4(uid, text, { event, settings }) {
 const runH4 = createH4Runner({
   getSettings: () => h4Store?.all() || {}, source: h4Source,
   allowed: h4Allowed, claim: (key, now, context) => h4Store.claim(key, now, context), deliver: deliverH4,
+  // Cloudflare persists the dedup key AND outbox in the same SQLite value/write.
+  // Old imported Redis markers remain respected, but new claims cannot strand
+  // a reminder between a marker commit and an outbox commit.
+  commit: async (key, uid, text, context) => {
+    db.h4Queued ||= {}
+    if (db.h4Queued[key] || await h4Store.wasClaimed(key)) return
+    const current = h4Store.get(uid)
+    if (!current.enabled || JSON.stringify(current) !== JSON.stringify(context.settings) || !h4Allowed(uid, context.event.symbol)) return
+    const now = Date.now()
+    for (const [k, at] of Object.entries(db.h4Queued)) if (now-at > 172800000) delete db.h4Queued[k]
+    db.h4Queued[key] = now
+    await deliverH4(uid, text, context)
+  },
   onError: () => { taskErrors.h4 = true },
 })
 async function checkH4() {
@@ -607,9 +625,16 @@ async function handleHttp(req, res) {
     const level = typeof b.level === 'number' || typeof b.level === 'string' && b.level.trim() ? Number(b.level) : NaN
     const dir = b.dir ?? 'reach'
     if (!SYMBOLS[b.symbol] || !allowedSyms(uid).includes(b.symbol) || !['reach', 'above', 'below'].includes(dir) || !isFinite(level) || level <= 0) return json(res, 400, { error: 'bad input' })
+    if (b.requestId !== undefined && (typeof b.requestId !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(b.requestId))) return json(res,400,{error:'invalid_request_id'})
+    const previous = b.requestId && db.alerts.find(a => a.userId === uid && a.requestId === b.requestId)
+    if (previous) {
+      if (previous.symbol !== b.symbol || previous.level !== level || previous.dir !== dir || previous.note !== cleanNote(b.note)) return json(res,409,{error:'request_conflict'})
+      return json(res,200,previous)
+    }
     const max = limitFor(uid)
     if (db.alerts.filter((x) => x.userId === uid && x.status === 'active').length >= max) return json(res, 400, { error: 'limit', max })
     const a = { id: db.seq++, userId: uid, symbol: b.symbol, dir, level, note: cleanNote(b.note), status: 'active', createdAt: Date.now() }
+    if (b.requestId) a.requestId = b.requestId
     if (dir === 'reach' && quoteFeed.fresh(b.symbol)) a.referencePrice = prices[b.symbol].price
     db.alerts.push(a); await save(); return json(res, 200, a)
   }
@@ -702,7 +727,7 @@ async function handleHttp(req, res) {
         let value = null
         if (req.method === 'PUT') {
           if (current.deliveries.some((d) => d.status === 'attempting')) throw new LiveConflict()
-          try { value = { ...newReminder(uid, id, b), createdAt: current.createdAt } }
+          try { value = editReminder(current, b) }
           catch (e) { return json(res, 400, { error: e.message }) }
         }
         if (req.method === 'PATCH') {
@@ -817,6 +842,7 @@ function feedRecipients() {
 function feedNoticeCurrent(event, recipients) {
   const symbols = recipients[event.userId]
   if (!quoteFeed.marketOpen() || !symbols) return false
+  if (event.feedSymbols) return event.feedSymbols.some(s => Object.hasOwn(symbols,s) && symbols[s] === (event.feedNotice === 'recovery'))
   const bad = Object.values(symbols).some(fresh => !fresh)
   return event.feedNotice === 'warning' ? bad : !bad
 }
@@ -832,11 +858,16 @@ async function watchFeed() {
   }
   for (const message of messages) {
     if (message.kind === 'recovery') {
-      const warning = db.events.findLast(e => e.userId === message.userId && e.feedNotice === 'warning')
-      // Do not announce recovery from a warning that was never delivered.
-      if (!warning || !['sent', 'unknown', 'attempting'].includes(warning.delivery)) continue
+      // Recovery belongs only to instruments actually mentioned in a delivered
+      // warning, not an unrelated/failed warning on the same user.
+      message.symbols = message.symbols.filter(symbol => {
+        const warning = db.events.findLast(e => e.userId === message.userId && e.feedNotice === 'warning' && (!e.feedSymbols || e.feedSymbols.includes(symbol)))
+        return warning && ['sent','unknown','attempting'].includes(warning.delivery)
+      })
+      if (!message.symbols.length) continue
+      message.text = feedNoticeText('recovery',message.symbols)
     }
-    enqueue(message.userId, message.text, { feedNotice: message.kind, expiresAt: Date.now() + 120000 })
+    enqueue(message.userId, message.text, { feedNotice: message.kind, feedSymbols: message.symbols, expiresAt: Date.now() + 120000 })
   }
   // Commit hysteresis/cooldown and pending messages together. Existing delivery
   // handles safe retries and never blindly resends an unknown Telegram outcome.

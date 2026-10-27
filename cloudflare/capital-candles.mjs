@@ -8,7 +8,14 @@ export function createCapitalCandles(env, store, now = Date.now) {
     return rows.map(row => {
       const time = capitalTime(row.snapshotTimeUTC) / 1000
       const values = ['openPrice','highPrice','lowPrice','closePrice'].map(k => {
-        const bid = Number(row[k]?.bid), ask = Number(row[k]?.ask)
+        const leg = value => {
+          if (!['number','string'].includes(typeof value) || typeof value === 'string' && !value.trim()) throw error('invalid_candles')
+          const n = Number(value)
+          if (!Number.isFinite(n) || n <= 0) throw error('invalid_candles')
+          return n
+        }
+        const bid = side === 'ask' ? null : leg(row[k]?.bid), ask = side === 'bid' ? null : leg(row[k]?.ask)
+        if (side === 'mid' && ask < bid) throw error('invalid_candles')
         return (side === 'bid' ? bid : side === 'ask' ? ask : (bid + ask) / 2) + offset
       })
       const [open,high,low,close] = values
@@ -17,7 +24,7 @@ export function createCapitalCandles(env, store, now = Date.now) {
     })
   }
   return { async get(params) {
-    const tf = params.get('timeframe') || 'M15', frame = frames[tf]
+    const tf = params.get('timeframe') || 'M15', frame = Object.hasOwn(frames,tf) ? frames[tf] : null
     const symbol = params.get('symbol') || 'DXY'
     if (!frame || !CAPITAL_CHART_SYMBOLS.includes(symbol)) throw Object.assign(error('unsupported_chart'), { status: 400 })
     const offset = symbol === 'DXY' ? 0 : Number(env['OFFSET_' + symbol] || 0)

@@ -27,7 +27,8 @@ export function localToUtc(date, time, zone) {
   if (!candidates.length) throw new Error(`${date} ${time} does not exist in ${zone}. Choose another time.`)
   return Math.min(...candidates)
 }
-export function normalizeLive(input, now = Date.now()) {
+export const liveScheduleKey = c => JSON.stringify([c.date, c.timezone, c.repeat, c.count, [...new Set(c.times)].sort()])
+export function normalizeLive(input, now = Date.now(), previous = null) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid reminder')
   const { text, date, times, timezone, repeat, count } = input
   if (typeof text !== 'string' || !text.trim() || text.trim().length > 500) throw new Error('Enter a reminder (up to 500 characters)')
@@ -37,16 +38,17 @@ export function normalizeLive(input, now = Date.now()) {
   if (!Array.isArray(times) || !times.length || times.length > 6 || times.some((t) => typeof t !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(t))) throw new Error('Choose 1–6 valid times')
   if (!LIVE_REPEATS.includes(repeat) || !Number.isInteger(count) || count < 1 || count > 90 || (repeat === 'once' && count !== 1)) throw new Error('Choose 1–90 repeat days or weeks')
   const normalized = { text: text.trim(), date, times: [...new Set(times)].sort(), timezone, repeat, count }
+  const keepSchedule = previous && liveScheduleKey(normalized) === liveScheduleKey(previous)
   const schedule = []
   let day = Date.parse(date + 'T00:00:00Z'), included = 0
-  if (day > now + 366 * 86400000 || day < now - 2 * 86400000) throw new Error('Choose a date within the next year')
+  if (!keepSchedule && (day > now + 366 * 86400000 || day < now - 2 * 86400000)) throw new Error('Choose a date within the next year')
   while (included < count) {
     const weekday = new Date(day).getUTCDay()
     if (repeat !== 'weekdays' || (weekday !== 0 && weekday !== 6)) {
       const currentDate = new Date(day).toISOString().slice(0, 10)
       for (const time of normalized.times) {
         const at = localToUtc(currentDate, time, timezone)
-        if (at <= now) throw new Error('All notification times must be in the future')
+        if (!keepSchedule && at <= now) throw new Error('All notification times must be in the future')
         schedule.push(at)
       }
       included++

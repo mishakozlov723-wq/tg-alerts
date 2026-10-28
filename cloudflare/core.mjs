@@ -1,7 +1,7 @@
 import { createAlertIcons } from './asset-icons.mjs'
 import { createUserAdmin } from './admin-users.mjs'
 // Cloudflare adapter: API and Telegram business rules retained from server.js.
-// Node/Render entrypoint remains untouched. One DO owns synchronous SQLite commits;
+// Cloudflare production entrypoint. One DO owns synchronous SQLite commits;
 // broker ingestion is serialized, background network waits are independent.
 import crypto from 'node:crypto'
 import { verifyAccessToken } from '../shared/access-token.mjs'
@@ -289,13 +289,13 @@ function getUserId(req) {
     return null
   }
   // local mock mode only (no BOT_TOKEN and nothing configured): never trust a client-supplied id in production
-  if (!BOT_TOKEN && MOCK && !REQUIRE_ACCESS && !env.RENDER) return String(req.headers['x-user-id'] || 'browser')
+  if (!BOT_TOKEN && MOCK && !REQUIRE_ACCESS) return String(req.headers['x-user-id'] || 'browser')
   return null
 }
 
 // ---------- Telegram bot: persistent keyboard under the input field ----------
 const TG_API = env.TG_API || 'https://api.telegram.org'
-const WEBAPP_URL = env.WEBAPP_URL || env.RENDER_EXTERNAL_URL || 'https://tg-alerts.retocker.workers.dev'
+const WEBAPP_URL = env.WEBAPP_URL || 'https://tg-alerts.retocker.workers.dev'
 const WELCOME = `Price alerts for EURUSD and GBPUSD.\n\nUp to ${BASE_ALERTS} alerts for free, ${PRO_ALERTS} with any paid bundle. Streaming OANDA price alerts and red news from Forex Factory, all in one place.\n\nWant Gold, Silver, GER40 or DXY? Tap Add quote.`
 const MY_ALERTS_TEXT = 'My alerts'
 const ADD_TEXT = 'Add quote'
@@ -419,8 +419,9 @@ async function refreshDiagnostics() {
   monitor.sample('h4', 'H4-напоминания', !h4Store ? 'error' : !h4Enabled.length ? 'idle' : !h4Source.configured || taskErrors.h4 || h4Bad ? 'error' : Object.keys(h4States).length ? 'ok' : 'unknown',
     `Активных настроек: ${h4Enabled.length}; OANDA: ${h4Source.configured ? 'настроен' : 'не настроен'}; ${Object.entries(h4States).map(([s,v]) => `${s}: ${v.status}`).join(', ') || 'запросы свечей ещё не требовались'}. Ошибка прохода: ${taskErrors.h4 ? 'да' : 'нет'}.`)
   const reminders = liveStore?.all() || [], outcomes = reminders.flatMap(r => r.deliveries).filter(d => ['failed','unknown','missed'].includes(d.status) && now - (d.at || 0) < 86400000)
-  monitor.sample('live', 'Live-напоминания', !liveStore || taskErrors.live ? 'error' : outcomes.length ? 'warn' : reminders.some(r => r.enabled) ? 'ok' : 'idle',
-    `Напоминаний: ${reminders.length}; failed/unknown/missed за 24 ч: ${outcomes.length}; ошибка прохода: ${taskErrors.live ? 'да' : 'нет'}.`)
+  const invalidLive = liveStore?.diagnostics().invalidRecords || 0
+  monitor.sample('live', 'Live-напоминания', !liveStore || taskErrors.live ? 'error' : invalidLive || outcomes.length ? 'warn' : reminders.some(r => r.enabled) ? 'ok' : 'idle',
+    `Напоминаний: ${reminders.length}; изолировано повреждённых записей: ${invalidLive}; failed/unknown/missed за 24 ч: ${outcomes.length}; ошибка прохода: ${taskErrors.live ? 'да' : 'нет'}.`)
   if (!AUTH_API_URL) monitor.sample('access', 'Access', REQUIRE_ACCESS ? 'warn' : 'idle', 'AUTH_API_URL не задан; доступность Access не проверена.')
   else if (now >= accessNext) {
     accessNext = now + 300000
@@ -786,7 +787,7 @@ return {
   },
   async update(update) {
     await handleUpdate(update)
-    if (monitor.snapshot().parts.requests) monitor.sample('requests', 'Обработчик запросов', 'ok', 'Telegram update обработан успешно.')
+    if (monitor.snapshot().parts.requests) { monitor.sample('requests', 'Обработчик запросов', 'ok', 'Telegram update обработан успешно.'); await monitor.flush() }
   },
   async watchdog() {
     if (!monitorAdmin || env.MONITOR_ALERTS === 'false') return

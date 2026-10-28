@@ -21,21 +21,25 @@ export async function createMonitor({ store, send, clock = Date.now }) {
     state.reportRetryAt = 0
   }
   state.startedAt ||= clock()
-  let dirty = true, savedAt = 0, notifying = false
+  let dirtyVersion = 1, savedVersion = 0, flushJob = null, notifying = false
   function progress(at = clock()) {
-    // A completed recovery must survive an immediate restart, not wait for throttle.
-    if (at && (state.schedulerFailed || state.parts.scheduler?.level === 'error')) savedAt = 0
-    state.housekeepingAt = at; state.schedulerFailed = !at; dirty = true
+    state.housekeepingAt = at; state.schedulerFailed = !at; dirtyVersion++
   }
-  async function flush(force = false) {
-    if (!dirty || !force && clock() - savedAt < 60000) return
-    await store(['SET', KEY, JSON.stringify(state)])
-    dirty = false; savedAt = clock()
+  function flush() {
+    if (flushJob) return flushJob
+    flushJob = (async () => {
+      while (savedVersion !== dirtyVersion) {
+        const version = dirtyVersion, snapshot = JSON.stringify(state)
+        await store(['SET', KEY, snapshot])
+        savedVersion = version
+      }
+    })().finally(() => { flushJob = null })
+    return flushJob
   }
   function sample(key, label, level, detail) {
     const now = clock(), old = state.parts[key]
     state.parts[key] = { label, level, detail, checkedAt: now, since: old?.level === level ? old.since : now }
-    state.checkedAt = now; dirty = true
+    state.checkedAt = now; dirtyVersion++
     if (old?.level === level) return false
     // Initial healthy/idle samples are not incidents or notifications.
     const bad = ['warn', 'error'].includes(level), recovered = old && ['warn', 'error'].includes(old.level)
@@ -61,11 +65,11 @@ export async function createMonitor({ store, send, clock = Date.now }) {
       state.nextReportAt = scheduledAt + (Math.floor((now - scheduledAt) / REPORT_INTERVAL_MS) + 1) * REPORT_INTERVAL_MS
       state.reportRetryAt = 0
       state.lastReportAttemptAt = now
-      dirty = true
+      dirtyVersion++
       await flush(true)
       try {
         await send(('🕗 Плановая сводка Alerts · раз в 2 дня, 08:20 МСК\n\n' + render('all')).slice(0, 4000))
-        state.lastReportSentAt = clock(); dirty = true
+        state.lastReportSentAt = clock(); dirtyVersion++
         await flush(true)
       } catch (e) {
         if (e.storageFailure) throw e
@@ -74,7 +78,7 @@ export async function createMonitor({ store, send, clock = Date.now }) {
         if (e.retrySafe) {
           state.nextReportAt = scheduledAt
           state.reportRetryAt = clock() + Math.max(300000, Number(e.retryAfterMs) || 0)
-          dirty = true
+          dirtyVersion++
           await flush(true)
         }
       }

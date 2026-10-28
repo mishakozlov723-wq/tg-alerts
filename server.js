@@ -257,7 +257,7 @@ function getUserId(req) {
 
 // ---------- Telegram bot: persistent keyboard under the input field ----------
 const TG_API = process.env.TG_API || 'https://api.telegram.org'
-const WEBAPP_URL = process.env.WEBAPP_URL || process.env.RENDER_EXTERNAL_URL || 'https://tg-alerts-2khy.onrender.com'
+const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000'
 const WELCOME = `Price alerts for EURUSD and GBPUSD.\n\nUp to ${BASE_ALERTS} alerts for free, ${PRO_ALERTS} with any paid bundle. Instant notifications and red news from Forex Factory, all in one place.\n\nWant Gold, Silver, GER40 or DXY? Tap Add quote.`
 const MY_ALERTS_TEXT = 'My alerts'
 const ADD_TEXT = 'Add quote'

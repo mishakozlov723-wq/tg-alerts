@@ -72,9 +72,9 @@ test('file write failure never changes memory or allows a send',async()=>{
   const s=await createLiveStore({file:'/no-such-live-dir/live.json'})
   await assert.rejects(s.cas('123',id,null,create(),true));assert.equal(s.all().length,0)
 })
-test('corrupt local storage and Redis outages fail closed',async()=>{
+test('invalid file structure and Redis outages fail closed',async()=>{
   const f=local()
-  try{fs.writeFileSync(f.file,'{"bad":"not-json"}');await assert.rejects(createLiveStore(f))}finally{f.cleanup()}
+  try{fs.writeFileSync(f.file,'[]');await assert.rejects(createLiveStore(f))}finally{f.cleanup()}
   await assert.rejects(createLiveStore({redis:async()=>{throw new Error('offline')}}))
 })
 // In-memory Redis protocol double executes the CAS semantics. Real Lua is also

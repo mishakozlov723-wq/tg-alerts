@@ -1,6 +1,8 @@
-# TG Alerts — потоковая миграция на Cloudflare Free
+# TG Alerts — рабочая версия на Cloudflare Workers
 
-Эта версия заменяет предыдущий snapshot-черновик. Рабочий Retocker Access не меняется. `main`, `server.js`, исходные Render-модули и исходные статические файлы не заменены.
+Рабочая версия находится в `main`; точка входа — `cloudflare/worker.mjs`.
+Статические файлы и общие H4/Live-модули используются Worker напрямую.
+`server.js` — отдельный legacy Node-сервер, а не рабочая точка входа Cloudflare.
 
 ## Что делает версия
 

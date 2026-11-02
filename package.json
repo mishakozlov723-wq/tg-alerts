@@ -8,10 +8,6 @@
     "deploy:cloudflare": "wrangler deploy",
     "test:browser": "node test/refinements-browser.mjs && node test/settings-motion-browser.mjs && node test/audit-browser.mjs"
   },
-  "dependencies": {
-    "dukascopy-node": "^1.45.0",
-    "lightweight-charts": "5.0.9"
-  },
   "engines": {
     "node": ">=20"
   },

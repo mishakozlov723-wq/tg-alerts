@@ -12,7 +12,7 @@ test('authenticated API, news/alert regression, real scheduler with stubbed OAND
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tg-h4-server-'))
   const port=await new Promise((resolve)=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p))})})
   const secret='isolated-test-secret-not-a-credential'
-  const child=spawn(process.execPath,['--import','./test/fixture-fetch.js','server.js'],{cwd:root,env:{PATH:process.env.PATH,PORT:String(port),DB_FILE:path.join(dir,'db.json'),PRICE_SOURCE:'oanda',OANDA_TOKEN:'fixture-token',OANDA_STREAM:'0',BOT_TOKEN:'fixture-token',BOT_POLLING:'off',NEWS_SOURCE:'mock',TG_API:'https://telegram.test.invalid',ACCESS_SIGNING_SECRET:secret,REQUIRE_ACCESS:'true',H4_TEST_DELIVERIES:path.join(dir,'deliveries')}})
+  const child=spawn(process.execPath,['--import','./test/fixture-fetch.js','server.js','--legacy'],{cwd:root,env:{PATH:process.env.PATH,PORT:String(port),DB_FILE:path.join(dir,'db.json'),PRICE_SOURCE:'oanda',OANDA_TOKEN:'fixture-token',OANDA_STREAM:'0',BOT_TOKEN:'fixture-token',BOT_POLLING:'off',NEWS_SOURCE:'mock',TG_API:'https://telegram.test.invalid',ACCESS_SIGNING_SECRET:secret,REQUIRE_ACCESS:'true',H4_TEST_DELIVERIES:path.join(dir,'deliveries')}})
   let output='';child.stdout.on('data',(c)=>output+=c);child.stderr.on('data',(c)=>output+=c)
   const base='http://127.0.0.1:'+port
   const headers=(uid)=>{const body=Buffer.from(JSON.stringify({sub:uid,project:'alerts',iat:Date.now(),exp:Date.now()+86400e3})).toString('base64url');return {'content-type':'application/json','x-access-token':body+'.'+crypto.createHmac('sha256',secret).update(body).digest('hex')}}

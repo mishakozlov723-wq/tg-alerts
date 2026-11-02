@@ -5,12 +5,22 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { SYMBOLS, prices, startPrices, setPrice, feedStatus } from './prices.js'
-import { getNews } from './news.js'
+import { getNews, pruneSentNews } from './news.js'
 import { verifyAccessToken } from './shared/access-token.mjs'
 import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner } from './h4.js'
 import { createH4Store } from './h4-store.js'
 import { createLiveStore, LiveConflict } from './live-store.js'
 import { newReminder, editReminder, liveIdValid, liveView, createLiveRunner } from './live.js'
+
+// Production runs on Cloudflare (npm run deploy:cloudflare). This legacy server
+// polls Telegram after deleteWebhook, which would take a production bot away
+// from the worker, so it starts only when asked explicitly: npm run start:legacy.
+if (!process.argv.includes('--legacy')) {
+  console.error('server.js — старый сервер, прод работает на Cloudflare (npm run deploy:cloudflare).\n' +
+    'С боевым BOT_TOKEN он снимет вебхук и заберёт бота у Cloudflare.\n' +
+    'Для локальной разработки с тестовым ботом: npm run start:legacy')
+  process.exit(1)
+}
 
 // Silver is a paid quote from Capital.com (epic can be changed with CAPITAL_EPIC_XAGUSD, shift with OFFSET_XAGUSD).
 if (!SYMBOLS.XAGUSD) SYMBOLS.XAGUSD = { label: 'Silver', premium: true, pip: 0.01, digits: 3, base: 50, capital: process.env.CAPITAL_EPIC_XAGUSD || 'SILVER', offset: Number(process.env.OFFSET_XAGUSD || 0), duka: ['xagusd'] }
@@ -218,6 +228,7 @@ function onTick(sym, price) {
 async function checkNews() {
   const items = await getNews()
   const now = Date.now()
+  if (pruneSentNews(db.sentNews, now)) save()
   for (const userId of Object.keys(db.settings)) {
     const s = db.settings[userId]
     for (const n of items) {
@@ -227,7 +238,7 @@ async function checkNews() {
         if (minsLeft > lead || minsLeft <= lead - 1.5) continue
         const key = `${userId}|${n.id}|${lead}`
         if (db.sentNews[key]) continue
-        db.sentNews[key] = 1
+        db.sentNews[key] = n.time || now
         const extra = n.forecast || n.previous ? `\nForecast: ${n.forecast || '-'} · Prev: ${n.previous || '-'}` : ''
         await notify(userId, `🔴 ${n.currency} ${n.title}\nIn ${lead} min${extra}`)
       }
@@ -472,11 +483,6 @@ const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'applic
 const body = (req) => new Promise((ok) => { let d = ''; req.on('data', (c) => (d += c)); req.on('end', () => { try { ok(JSON.parse(d || '{}')) } catch { ok({}) } }) })
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' }
 
-// Small on-the-fly fix for the page: reload the quote list after sign-in.
-function patchIndex(html) {
-  return html
-    .replace('renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)', () => "cfg = await api('/api/config'); renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)")
-}
 // The page redeems Access codes through its own origin, like the Cloudflare worker.
 async function redeemAccessCode(req, res) {
   if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' })
@@ -501,7 +507,6 @@ const server = http.createServer(async (req, res) => {
     const f = path.join(__dir, 'public', p === '/' ? 'index.html' : p)
     if (!f.startsWith(path.join(__dir, 'public')) || !fs.existsSync(f)) { res.writeHead(404); return res.end('not found') }
     res.writeHead(200, { 'content-type': mime[path.extname(f)] || 'text/plain' })
-    if (path.basename(f) === 'index.html') return res.end(patchIndex(fs.readFileSync(f, 'utf8')))
     return res.end(fs.readFileSync(f))
   }
 

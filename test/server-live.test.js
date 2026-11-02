@@ -16,7 +16,7 @@ test('Live API auth, ownership, validation, CRUD, real timer, persistence and no
   const secret='isolated-live-test-not-a-credential',base='http://127.0.0.1:'+port
   let child,output=''
   function boot(){
-    child=spawn(process.execPath,['--import','./test/fixture-fetch.js','server.js'],{cwd:root,env:{PATH:process.env.PATH,PORT:String(port),DB_FILE:path.join(dir,'db.json'),PRICE_SOURCE:'oanda',OANDA_TOKEN:'fixture-token',OANDA_STREAM:'0',BOT_TOKEN:'fixture-token',BOT_POLLING:'off',NEWS_SOURCE:'mock',TG_API:'https://telegram.test.invalid',ACCESS_SIGNING_SECRET:secret,REQUIRE_ACCESS:'true',H4_TEST_DELIVERIES:deliveries,LIVE_TEST_CLOCK:clock}})
+    child=spawn(process.execPath,['--import','./test/fixture-fetch.js','server.js','--legacy'],{cwd:root,env:{PATH:process.env.PATH,PORT:String(port),DB_FILE:path.join(dir,'db.json'),PRICE_SOURCE:'oanda',OANDA_TOKEN:'fixture-token',OANDA_STREAM:'0',BOT_TOKEN:'fixture-token',BOT_POLLING:'off',NEWS_SOURCE:'mock',TG_API:'https://telegram.test.invalid',ACCESS_SIGNING_SECRET:secret,REQUIRE_ACCESS:'true',H4_TEST_DELIVERIES:deliveries,LIVE_TEST_CLOCK:clock}})
     child.stdout.on('data',(c)=>output+=c);child.stderr.on('data',(c)=>output+=c)
   }
   const headers=(uid)=>{const b=Buffer.from(JSON.stringify({sub:uid,project:'alerts',iat:Date.now(),exp:Date.now()+86400e3})).toString('base64url');return {'content-type':'application/json','x-access-token':b+'.'+crypto.createHmac('sha256',secret).update(b).digest('hex')}}

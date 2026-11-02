@@ -103,7 +103,11 @@ const BASE_ALERTS = Number(env.BASE_ALERTS || 15)
 const PRO_ALERTS = Number(env.PRO_ALERTS || 50)
 const limitFor = (uid) => ((db.owned[uid] || []).length ? PRO_ALERTS : BASE_ALERTS)
 const cleanNote = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
-const defaultSettings = () => ({ lead: [15, 5], currencies: ['USD', 'EUR', 'GBP'] })
+// News is opt-in: opening the tab no longer subscribes. Records saved before the switch
+// existed (no `enabled` field) were already receiving news and stay enabled.
+const defaultSettings = () => ({ enabled: false, lead: [15, 5], currencies: ['USD', 'EUR', 'GBP'] })
+const newsEnabled = s => !!s && s.enabled !== false
+const newsView = s => s ? { enabled: newsEnabled(s), lead: s.lead, currencies: s.currencies } : defaultSettings()
 
 // ---------- quotes: free ones for everybody, paid ones only for buyers ----------
 // Paid quotes are sold only in bundles. Free: EURUSD and GBPUSD.
@@ -306,6 +310,7 @@ async function checkNews() {
   const now = Date.now()
   for (const userId of Object.keys(db.settings)) {
     const s = db.settings[userId]
+    if (!newsEnabled(s)) continue
     for (const n of items) {
       if (!s.currencies.includes(n.currency)) continue
       const minsLeft = (n.time - now) / 60000
@@ -456,6 +461,14 @@ async function pruneDb(now = Date.now()) {
   if (now < nextPrune) return 0
   nextPrune = now + 3600000
   let removed = 0
+  // One-time cleanup: drop every alert that fired before this release. New fired
+  // alerts stay visible (grey) until the user deletes them.
+  if (!db.firedPurgedV1) {
+    const before = db.alerts.length
+    db.alerts = db.alerts.filter((a) => a.status !== 'fired')
+    removed += before - db.alerts.length; db.firedPurgedV1 = now
+    await save()
+  }
   for (const key of Object.keys(db.sentNews)) {
     // user|country|title|ISO event date|lead: a past event can never be due again.
     const at = key.split('|').at(-2)
@@ -755,11 +768,12 @@ async function handleHttp(req, res) {
   if (p === '/api/settings') {
     if (req.method === 'POST') {
       const b = await body(req)
-      if (!Array.isArray(b.lead) || !Array.isArray(b.currencies) || b.lead.some(x => ![1,5,15,30].includes(Number(x))) || b.currencies.some(x => !['USD','EUR','GBP','JPY','CAD','AUD','CHF','NZD'].includes(x))) return json(res, 400, {error:'Invalid news settings'})
-      db.settings[uid] = { lead: [...new Set(b.lead.map(Number))], currencies: [...new Set(b.currencies)] }; await save()
+      if (!Array.isArray(b.lead) || !Array.isArray(b.currencies) || (b.enabled !== undefined && typeof b.enabled !== 'boolean') || b.lead.some(x => ![1,5,15,30].includes(Number(x))) || b.currencies.some(x => !['USD','EUR','GBP','JPY','CAD','AUD','CHF','NZD'].includes(x))) return json(res, 400, {error:'Invalid news settings'})
+      const enabled = typeof b.enabled === 'boolean' ? b.enabled : newsEnabled(db.settings[uid])
+      db.settings[uid] = { enabled, lead: [...new Set(b.lead.map(Number))], currencies: [...new Set(b.currencies)] }; await save()
     }
-    if (!db.settings[uid]) { db.settings[uid] = defaultSettings(); await save() }
-    return json(res, 200, db.settings[uid])
+    // GET only reads: no record is created, so viewing the tab does not subscribe.
+    return json(res, 200, newsView(db.settings[uid]))
   }
   if (p === '/api/h4/settings') {
     const store = await getH4Store()

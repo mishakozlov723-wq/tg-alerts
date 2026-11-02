@@ -89,7 +89,7 @@ Pause/resume, edit and delete are available. No premium quote purchase is needed
   are rejected with the exact date/time so a different time can be selected.
 - API routes `/api/live` (GET/POST) and `/api/live/:id` (PUT/PATCH/DELETE) use the
   existing authenticated user. Server validates all dates, times, lengths and limits.
-  All times must be future at creation/replacement. Editing replaces the schedule;
+  Times that already passed (e.g. earlier today) are skipped; the rest are scheduled. Editing replaces the schedule;
   past deliveries are not replayed. Count means days/weeks, not total messages.
 - Separate Redis hash `tg-alerts:{live}:reminders:v1` stores each reminder including
   its finite schedule and delivery outcomes. Lua compare-and-swap prevents stale

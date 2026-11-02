@@ -56,14 +56,19 @@ export function normalizeLive(input, now = Date.now(), previous = null) {
     const weekday = new Date(day).getUTCDay()
     if (repeat !== 'weekdays' || (weekday !== 0 && weekday !== 6)) {
       const currentDate = new Date(day).toISOString().slice(0, 10)
+      let added = 0
       for (const time of normalized.times) {
         const at = localToUtc(currentDate, time, timezone)
-        if (!keepSchedule && at <= now) throw new Error('All notification times must be in the future')
-        schedule.push(at)
+        // Times that already passed (e.g. earlier today) are skipped, not rejected.
+        if (!keepSchedule && at <= now) continue
+        schedule.push(at); added++
       }
-      included++
+      // A day/week counts only when it still has at least one future time.
+      if (added || keepSchedule) included++
+      else if (repeat === 'once') break
     }
     day += (repeat === 'weekly' ? 7 : 1) * 86400000
   }
+  if (!schedule.length) throw new Error('All notification times have already passed')
   return { config: normalized, schedule: schedule.sort((a, b) => a - b) }
 }

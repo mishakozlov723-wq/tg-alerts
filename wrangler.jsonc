@@ -23,5 +23,5 @@
     "NEWS_MIRROR_URL":"https://fxfactory.netlify.app/api/calendar",
     "ADMIN_CHAT_ID":"1011596614"
   },
-  "observability":{"enabled":false}
+  "observability":{"enabled":true}
 }

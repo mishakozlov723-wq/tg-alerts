@@ -124,6 +124,18 @@ function enqueue(userId, text, extra = {}) {
   trimEvents()
   return event
 }
+// The user's latest settled notification decides: a definite Telegram rejection
+// (Start never pressed, bot blocked, chat not found) is shown in the app.
+const DELIVERY_ISSUE_CODES = [400, 403]
+function deliveryIssue(uid) {
+  if (!uid) return null
+  for (let i = db.events.length - 1; i >= 0; i--) {
+    const e = db.events[i]
+    if (e.userId !== uid || !['sent', 'failed'].includes(e.delivery)) continue
+    return e.delivery === 'failed' && DELIVERY_ISSUE_CODES.includes(e.failedCode) ? { at: e.ts || null, code: e.failedCode } : null
+  }
+  return null
+}
 async function deliverEvent(event) {
   if (event.delivery !== 'pending' || (event.retryAt || 0) > Date.now()) return event.delivery
   const h4 = event.h4 && (await getH4Store())?.get(event.userId)
@@ -147,6 +159,7 @@ async function deliverEvent(event) {
       event.delivery = 'sent'; delete event.retryAt
     } catch (e) {
       event.delivery = e.retrySafe ? 'pending' : e.definite ? 'failed' : 'unknown'
+      if (event.delivery === 'failed' && e.telegramCode) event.failedCode = e.telegramCode
       if (e.retrySafe) event.retryAt = Date.now() + (e.retryAfterMs || 0)
       await save()
       if (e.retrySafe && !e.definite) throw e // Preserve outbound-budget rotation.
@@ -640,7 +653,7 @@ async function handleHttp(req, res) {
   if (p === '/health') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok') }
   const visitor = getUserId(req)
   if (visitor) await userAdmin.remember({ id: visitor })
-  if (p === '/api/config') return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: symbolsFor(getUserId(req)), quoteMode: 'stream', displayIntervalMs: 1000 })
+  if (p === '/api/config') { const user = getUserId(req); return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: symbolsFor(user), quoteMode: 'stream', displayIntervalMs: 1000, deliveryIssue: deliveryIssue(user) }) }
   if (p === '/api/feed-status') return json(res, 200, quoteFeed.status())
   if (p === '/api/prices') {
     const uid = getUserId(req)

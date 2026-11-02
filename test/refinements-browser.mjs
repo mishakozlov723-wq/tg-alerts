@@ -184,9 +184,11 @@ try {
   assert.equal(await page.locator('#h4Details').evaluate(e=>e.inert),true)
   await page.locator('[data-t=alerts]').click();await page.waitForTimeout(700)
   const deleting = alerts[0].id
-  await page.locator(`.item[data-id="${deleting}"] .x`).click();await page.waitForTimeout(100)
-  assert.ok(await page.locator(`.item[data-id="${deleting}"]`).count(),'Delete has an exit animation')
-  await page.waitForTimeout(500);assert.equal(await page.locator(`.item[data-id="${deleting}"]`).count(),0)
+  await page.locator(`.item[data-id="${deleting}"] .x`).click()
+  // Wait on state, not fixed pauses: the row goes inert and animates out, then leaves the DOM.
+  await page.waitForFunction(id=>{const row=document.querySelector(`.item[data-id="${id}"]`);return row?.inert&&row.getAnimations().length>0},deleting,{timeout:5000})
+  await page.locator(`.item[data-id="${deleting}"]`).waitFor({state:'detached',timeout:5000})
+  assert.equal(await page.locator(`.item[data-id="${deleting}"]`).count(),0)
   // Mobile: clipboard denial, native/manual paste, reduced motion and no horizontal overflow.
   const mobile = await browser.newContext({ viewport:{width:390,height:844},isMobile:true,hasTouch:true })
   await mobile.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort())

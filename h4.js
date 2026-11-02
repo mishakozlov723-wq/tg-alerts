@@ -121,6 +121,24 @@ export function createOandaH4({ env = process.env, fetcher = fetch, clock = Date
   }
   return { get, configured }
 }
+// Monitor view of H4 states. A call for a subset (one user's status page)
+// merges into it instead of replacing the runner's results for other symbols;
+// symbols nobody has requested for ttlMs drop out.
+export function createH4StatusBoard({ ttlMs = 10 * 60000, clock = Date.now } = {}) {
+  const seen = new Map()
+  return {
+    record(states) {
+      const now = clock()
+      for (const [s, v] of Object.entries(states)) seen.set(s, { status: v.status, at: now })
+      return states
+    },
+    current() {
+      const now = clock()
+      for (const [s, v] of seen) if (now - v.at > ttlMs) seen.delete(s)
+      return Object.fromEntries([...seen].map(([s, v]) => [s, v.status]))
+    },
+  }
+}
 function candleSnapshotFromEntry(entry, now) {
   return {
     active: entry.snapshot.active && now < entry.snapshot.active.close ? entry.snapshot.active : null,

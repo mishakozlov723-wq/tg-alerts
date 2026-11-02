@@ -156,6 +156,8 @@ html,body,body *{scrollbar-width:none;-ms-overflow-style:none}
 html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{display:none;width:0;height:0}
 
 #accessRetry[hidden]{display:none!important}
+.delivery-issue{margin:0 0 16px;padding:11px 13px;border:1px solid rgba(255,120,120,.35);border-radius:var(--r);font-size:13px;font-weight:300;line-height:1.45;color:var(--txt)}
+.delivery-issue[hidden]{display:none}
 </style>
 </head>
 <body>
@@ -163,6 +165,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
 <div id="splash"><div id="introStage"></div></div>
 <div id="toast"></div>
 <div class="wrap">
+  <div id="deliveryIssue" class="delivery-issue" role="alert" hidden>Telegram did not deliver your last notification. Open the bot, tap Start and make sure the bot is not blocked.</div>
   <section id="p-new">
     <div class="eyebrow">New alert</div>
     <h1>Set a level.</h1>
@@ -635,15 +638,26 @@ function saveQuotes() {
   try { localStorage.setItem(QUOTE_CACHE_KEY, JSON.stringify({ version: 1, mock: !!cfg.mock, prices })) } catch {}
 }
 let eventsBusy = false, eventsReady = false
+// Telegram's answer may come after an event was first seen: recheck unsettled
+// events (up to 10 min old) and show a definite rejection in the app.
+const unsettledEvents = new Set()
+function showDeliveryIssue(issue) { $('#deliveryIssue').hidden = !issue }
 async function pollEvents() {
   if (eventsBusy) return
   eventsBusy = true
   try {
-    const ev = await api('/api/events?since=' + lastEvent, { signal: AbortSignal.timeout(10000) })
+    const since = unsettledEvents.size ? Math.min(lastEvent, ...unsettledEvents) - 1 : lastEvent
+    const ev = await api('/api/events?since=' + since, { signal: AbortSignal.timeout(10000) })
     if (!Array.isArray(ev)) return
     for (const e of ev) {
-      lastEvent = Math.max(lastEvent, e.id)
-      if (eventsReady) { if (!tg?.initData) toast(e.text); if (!$('#p-alerts').classList.contains('hide')) loadAlerts().catch(() => {}) }
+      if (e.id > lastEvent) {
+        lastEvent = e.id
+        if (eventsReady) { if (!tg?.initData) toast(e.text); if (!$('#p-alerts').classList.contains('hide')) loadAlerts().catch(() => {}) }
+      }
+      if (['pending', 'attempting'].includes(e.delivery) && Date.now() - (e.ts || 0) < 600000) unsettledEvents.add(e.id)
+      else unsettledEvents.delete(e.id)
+      if (e.delivery === 'sent') showDeliveryIssue(null)
+      else if (e.delivery === 'failed' && [400, 403].includes(e.failedCode)) showDeliveryIssue(e)
     }
     eventsReady = true
   } finally { eventsBusy = false }
@@ -764,6 +778,7 @@ function bootstrap() {
   // Refresh entitlements after code entry, before restoring any paid assets.
   if (cfg.authRequired) cfg = await api('/api/config', { signal: AbortSignal.timeout(10000) })
   if (!cfg.symbols || cfg.error) throw new Error('Configuration unavailable')
+  showDeliveryIssue(cfg.deliveryIssue)
   restoreQuotes()
   renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)
   window.PriceChart?.connect({ api, getQuote: asset => prices[asset] })

@@ -10,7 +10,7 @@ const root = fileURLToPath(new URL('../', import.meta.url)), publicDir = path.jo
 // The production page is served as-is: no runtime HTML patching in the worker.
 const html = readFileSync(path.join(publicDir, 'index.html'), 'utf8')
 assert.ok(html.includes("fetch('/api/access/redeem'"))
-let checkFail=false,configFail=false;const injectedNews=[];let seq = 3, rejectNext = false, failSettings = false, redemptions = 0, configDelay = 0
+let checkFail=false,configFail=false,configIssue=null;const events=[];const injectedNews=[];let seq = 3, rejectNext = false, failSettings = false, redemptions = 0, configDelay = 0
 let alerts = [
   { id: 1, symbol: 'EURUSD', level: 1.1005, dir: 'reach', status: 'active', note: 'first note' },
   { id: 2, symbol: 'EURUSD', level: 1.1015, dir: 'reach', status: 'active', note: 'second note' }
@@ -24,11 +24,11 @@ const server = http.createServer(async (req, res) => {
   if (u.pathname.startsWith('/api/')) {
     if (u.pathname === '/api/access/redeem') { redemptions++; return rejectNext ? send({ error: 'invalid_or_expired_code' }, 401) : send({ token: 'synthetic-token' }) }
     if(u.pathname==='/api/news')return send(injectedNews);
-    if (u.pathname === '/api/config') { if(configFail&&req.headers['x-access-token'])return send({error:'audit_failure'},503); if (configDelay && req.headers['x-access-token']) await new Promise(r=>setTimeout(r,configDelay)); return send({ authRequired: true, authApi: '/local-access', mock: false, symbols: { EURUSD: { digits: 5, pip: .0001 }, GBPUSD: { digits: 5, pip: .0001 } } }) }
+    if (u.pathname === '/api/config') { if(configFail&&req.headers['x-access-token'])return send({error:'audit_failure'},503); if (configDelay && req.headers['x-access-token']) await new Promise(r=>setTimeout(r,configDelay)); return send({ authRequired: true, authApi: '/local-access', mock: false, symbols: { EURUSD: { digits: 5, pip: .0001 }, GBPUSD: { digits: 5, pip: .0001 } }, deliveryIssue: configIssue }) }
     if(u.pathname==='/api/access/check'&&checkFail){if(checkFail==='401')return send({ok:false},401);if(checkFail==='503')return send({error:'unavailable'},503);req.socket.destroy();return;}
     if (u.pathname === '/api/access/check') return send({ ok: req.headers['x-access-token'] === 'synthetic-token' })
     if (u.pathname === '/api/prices') return send(Object.fromEntries(['EURUSD','GBPUSD'].map(s => [s, { price: 1.1008, dataTs: Date.now(), observedAt: Date.now(), tradeable: true, stale: false }])))
-    if (u.pathname === '/api/events') return send([])
+    if (u.pathname === '/api/events') return send(events.filter(e => e.id > Number(u.searchParams.get('since') || 0)))
     if (u.pathname === '/api/settings') return send({ lead: [15], currencies: ['EUR'] })
     if (u.pathname === '/api/h4/settings') {
       if (req.method === 'POST') { if (failSettings) return send({error:'save_failed'},503); prefs = b }
@@ -76,6 +76,14 @@ try {
  injectedNews.push(...await source.getNews());await page.evaluate(()=>loadNews());await page.waitForTimeout(200)
  assert.equal(await page.evaluate(()=>window.auditXss),undefined);assert.equal(await page.locator('#nlist img').count(),0)
  assert.ok((await page.locator('#nlist').textContent()).includes(payload),'External news must remain literal text')
+ // A definite Telegram rejection is visible in the app, including a late one.
+ configIssue={at:Date.now(),code:403};await page.reload();await page.waitForSelector('.asset')
+ assert.equal(await page.locator('#deliveryIssue').isVisible(),true,'A rejection is shown when the app opens')
+ configIssue=null;events.push({id:7,text:'delivered',ts:Date.now(),delivery:'sent'})
+ await page.waitForFunction(()=>document.querySelector('#deliveryIssue').hidden,null,{timeout:5000})
+ events.push({id:8,text:'queued',ts:Date.now(),delivery:'pending'});await page.waitForFunction(()=>unsettledEvents.has(8),null,{timeout:5000})
+ Object.assign(events[1],{delivery:'failed',failedCode:403})
+ await page.waitForFunction(()=>!document.querySelector('#deliveryIssue').hidden&&!unsettledEvents.size,null,{timeout:5000})
  for(const failure of [true,'503']) {
   checkFail=failure;await page.reload();await page.locator('#bootRetry').waitFor()
   assert.equal(await page.evaluate(()=>localStorage.getItem('retocker.access.alerts.v3')),'synthetic-token')
@@ -102,5 +110,5 @@ try {
  checkFail=false;await page.locator('#accessCode').fill('654321');await page.waitForTimeout(100);await page.locator('#accessAction').click()
  await page.waitForSelector('.asset');await page.waitForFunction(()=>document.querySelector('#accessGate').classList.contains('hide'))
  assert.deepEqual(errors,[]);await context.close()
- console.log('PASS: news escaped; Create guarded; network/503 retry retains session; hydration retry keeps gate and reuses token. Synthetic APIs only.')
+ console.log('PASS: news escaped; Create guarded; Telegram delivery rejection shown; network/503 retry retains session; hydration retry keeps gate and reuses token. Synthetic APIs only.')
 }finally{await browser.close();await new Promise(r=>server.close(r))}

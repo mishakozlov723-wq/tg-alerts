@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { createEngine } from '../cloudflare/core.mjs'
 import { createLocalStore, emptyMain } from '../cloudflare/storage.mjs'
+import { createHmac } from 'node:crypto'
 
 const uid = '12345', admin = '99999'
 function fixture(main, now) {
@@ -74,6 +75,7 @@ for (const [response, expected] of [['timeout', 'unknown'], ['403', 'failed']]) 
   try {
     f.setResponse(response); await (await createEngine(f.env)).housekeeping()
     assert.equal((await f.main()).events[0].delivery, expected)
+    assert.equal((await f.main()).events[0].failedCode, response === '403' ? 403 : undefined)
     const count = f.calls.length
     await (await createEngine(f.env)).housekeeping(); assert.equal(f.calls.length, count)
   } finally { f.db.close() }
@@ -141,4 +143,21 @@ test('pending H4 retries expire on settings change or deadline rather than send 
 test('queued news expires instead of sending after release time', async () => {
   const f = fixture({ events: [{ id: 1, userId: uid, text: 'Old news', delivery: 'pending', expiresAt: Date.now() - 1 }], seq: 2 })
   try { await (await createEngine(f.env)).housekeeping(); assert.equal((await f.main()).events[0].delivery, 'expired'); assert.equal(f.calls.length, 0) } finally { f.db.close() }
+})
+test('the app shows a definite Telegram rejection until a later message is delivered', async () => {
+  const SECRET = 'artificial-signing-secret', other = '67890', ts = Date.now() - 60000
+  const sign = user => { const b = Buffer.from(JSON.stringify({ sub: user, project: 'alerts', iat: Date.now(), exp: Date.now() + 600000 })).toString('base64url'); return b + '.' + createHmac('sha256', SECRET).update(b).digest('hex') }
+  const issue = async events => {
+    const f = fixture({ events, seq: 10 })
+    try {
+      const engine = await createEngine({ ...f.env, ACCESS_SIGNING_SECRET: SECRET })
+      return (await (await engine.http(new Request('https://local/api/config', { headers: { 'x-access-token': sign(uid) } }))).json()).deliveryIssue
+    } finally { f.db.close() }
+  }
+  const failed = { id: 1, userId: uid, text: 'a', ts, delivery: 'failed', failedCode: 403 }
+  assert.deepEqual(await issue([failed]), { at: ts, code: 403 })
+  assert.deepEqual(await issue([failed, { id: 2, userId: uid, text: 'b', ts, delivery: 'pending' }]), { at: ts, code: 403 }, 'An unsettled message does not hide it')
+  assert.equal(await issue([failed, { id: 2, userId: uid, text: 'b', ts, delivery: 'sent' }]), null, 'A later delivered message clears it')
+  assert.equal(await issue([{ ...failed, userId: other }]), null, 'Other users are not affected')
+  assert.equal(await issue([{ ...failed, failedCode: undefined }]), null, 'Only definite user-side rejections are shown')
 })

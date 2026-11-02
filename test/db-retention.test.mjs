@@ -30,7 +30,8 @@ test('housekeeping prunes old news reminders and abandoned payment requests only
     14: { id: 14, userId: '4', symbol: 'METALS', status: 'declined', ts: now - 90 * day },
     15: { id: 15, userId: '5', symbol: 'METALS', status: 'new' },
   }
-  const alerts = [{ id: 1, userId: '1', symbol: 'EURUSD', dir: 'above', level: 2, status: 'fired', firedAt: now - 400 * day }]
+  const alerts = [{ id: 1, userId: '1', symbol: 'EURUSD', dir: 'above', level: 2, status: 'fired', firedAt: now - 400 * day },
+    { id: 2, userId: '1', symbol: 'EURUSD', dir: 'reach', level: 3, status: 'active' }]
   const { db, store } = local({ sentNews, orders, alerts, seq: 20 })
   try {
     const core = await createEngine({ LOCAL_STORE: store, PRICE_SOURCE: 'mock', NEWS_SOURCE: 'mock', MONITOR_ALERTS: 'false', FETCH: async () => { throw new Error('No network') } })
@@ -38,7 +39,8 @@ test('housekeeping prunes old news reminders and abandoned payment requests only
     const d = JSON.parse(await store.command(['GET', 'tg-alerts-db']))
     assert.deepEqual(Object.keys(d.sentNews).sort(), [`1|USD|CPI m/m|${iso(now - 6 * day)}|5`, `2|EUR|Future|${iso(now + day)}|15`, '3|mock|Test|5|15'].sort())
     assert.deepEqual(Object.keys(d.orders).sort(), ['11', '12', '13', '14', '15'])
-    assert.equal(d.alerts.length, 1, 'alerts are not pruned automatically')
+    assert.deepEqual(d.alerts.map(a => a.id), [2], 'old fired alerts are purged once, active kept')
+    assert.ok(d.firedPurgedV1, 'one-time purge is recorded')
   } finally { Date.now = clock; db.close() }
 })
 

@@ -195,3 +195,9 @@ test('reminder request IDs work without crypto.randomUUID (older Telegram WebVie
     for (const id of ids) { assert.ok(liveIdValid(id), id); assert.match(id, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/) }
   }
 })
+test('daily reminder created after some of today\'s times skips only the passed ones',()=>{
+  const at=Date.parse('2026-03-02T15:00Z') // 10:00 in New York
+  const {schedule}=normalizeLive({...config,date:'2026-03-02',times:['09:00','11:00'],repeat:'daily',count:2},at)
+  assert.deepEqual(schedule.map(iso),['2026-03-02T16:00:00.000Z','2026-03-03T14:00:00.000Z','2026-03-03T16:00:00.000Z'])
+  assert.throws(()=>normalizeLive({...config,date:'2026-03-02',times:['09:00']},at),/already passed/)
+})

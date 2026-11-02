@@ -62,14 +62,14 @@
 
 ## Настройка после проверки данных
 
-После смены Production branch существующая сборка может не запуститься сама. Новый commit в `cloudflare-migration` даёт событие push для Workers Builds; в Deployments нужно отдельно убедиться, что сборка действительно появилась и относится к этой ветке.
+Production branch Worker **tg-alerts** в Cloudflare (Settings → Builds) — **`main`**: каждый merge в main сразу запускает сборку и выкладку. В Deployments нужно отдельно убедиться, что сборка действительно появилась и относится к main.
 
 1. Старый **Render Alerts** оставить остановленным; не трогать рабочий Access на Cloudflare. UptimeRobot для предотвращения сна не нужен. Пробуждение старого Render-процесса может удалить новый webhook и создать конкурирующего обработчика.
-2. Создать отдельный Worker **tg-alerts**, подключить GitHub-репозиторий `tg-alerts`. После создания выбрать Production branch **cloudflare-migration**, не `main`. Build command пустая, Deploy command `npx wrangler deploy`, Root `/`. Успешный static deploy из main ещё не означает работающего бота.
+2. Создать отдельный Worker **tg-alerts**, подключить GitHub-репозиторий `tg-alerts`. Production branch — **`main`**. Build command пустая, Deploy command `npx wrangler deploy`, Root `/`. Успешный static deploy из main ещё не означает работающего бота.
 3. Build API token Cloudflare создаёт автоматически. Никакую строку этого токена искать или вводить в приложение не нужно.
 4. Wrangler сам создаёт SQLite Durable Object `AlertsEngine` и binding `ALERTS`. D1 вручную не создавать.
 5. Production Runtime Secrets добавить **одной группой**, отметить Secret у каждого, один deploy:
-   - `BOT_TOKEN` — именно Telegram Alerts, **не @verifycapp**;
+   - `BOT_TOKEN` — именно Telegram Alerts, **не бот Access** (@verifycapp, он же @retocker_access_bot — один бот с двумя именами);
    - `ACCESS_SIGNING_SECRET` — **то же значение, что в работающем Access**, не генерировать заново;
    - `TELEGRAM_WEBHOOK_SECRET` — отдельный новый секрет Alerts: **32–256 символов A–Z/a–z/0–9/_/-**. Длина 40 подходит, ровно 64 не требуется;
    - `OANDA_TOKEN` — действующий токен старого источника OANDA;
@@ -77,7 +77,7 @@
 6. Перенести реальные старые настройки брокера: `OANDA_ENV` practice/live, `OANDA_ACCOUNT`, `OANDA_SIDE` bid/ask/mid; instrument overrides, `CAPITAL_ENV` demo/live, `CAPITAL_SIDE`, `CAPITAL_EPIC_*`, `OFFSET_*`, если использовались. Текущее умолчание **OANDA bid**, как в исходном коде; его нужно сверить с реальным старым окружением, не угадывать по этому файлу. PRICE_SOURCE oanda, REQUIRE_ACCESS true. Если старый сервис действительно использовал Dukascopy, этот адаптер НЕ является готовым переносом такого источника — сначала отдельно согласовать источник.
 7. Проверить `WEBAPP_URL`: он должен быть реальным production HTTPS-адресом нового Alerts. Ожидаемый `https://tg-alerts.retocker.workers.dev` нужно подтвердить после создания. AUTH_API_URL указывает на существующий `https://retocker-access.retocker.workers.dev`.
 8. `ADMIN_CHAT_ID`, `PAY_DETAILS`, цены/лимиты `PREMIUM_*`, `BASE_ALERTS`, `PRO_ALERTS`, `NEWS_MIRROR_URL`/`NEWS_URL` переносить только если использовались. Не добавлять случайные переменные и новые пароли.
-9. На `/setup.html` ввести **TELEGRAM_WEBHOOK_SECRET Alerts** — не BOT_TOKEN и не пароль Access. Проверить username. @verifycapp специально отклоняется. Сверить/импортировать данные либо явно подтвердить пустой старт.
+9. На `/setup.html` ввести **TELEGRAM_WEBHOOK_SECRET Alerts** — не BOT_TOKEN и не пароль Access. Проверить username. Бот Access (@verifycapp / @retocker_access_bot) специально отклоняется. Сверить/импортировать данные либо явно подтвердить пустой старт.
 10. Кнопка подключения проверяет доступность OANDA, затем регистрирует menu/commands/webhook и включает фоновый stream. Одного deploy недостаточно для включения настоящего бота.
 11. Проверить `/health` с заголовком `x-setup-secret: <TELEGRAM_WEBHOOK_SECRET>`: ok true, runtime cloudflare, storage sqlite, quoteMode stream, enabled true. Без заголовка `/health` отвечает только `{"ok":true}` или ошибку, без подробностей и без названий недостающих переменных; `/api/feed-status` без заголовка отвечает 403. `feed.connected` и свежие цены проверять отдельно; наличие конфигурации само по себе не доказывает непрерывную работу брокера.
 12. Отправить `/start` в Alerts, открыть **свежую** кнопку. Вход — шестизначный код проекта Alerts из работающего Access. Проверить реальный алерт при закрытой мини-апп, обновление экрана раз в секунду, H4, Live и Usage.

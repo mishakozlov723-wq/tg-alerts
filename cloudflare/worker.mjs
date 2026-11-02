@@ -217,31 +217,6 @@ async function handle(req,env){
   const assetRequest=new Request(req);assetRequest.headers.delete('if-none-match');assetRequest.headers.delete('if-modified-since')
   const asset=await env.ASSETS.fetch(assetRequest),headers=new Headers(asset.headers)
   headers.set('referrer-policy','no-referrer');headers.set('cache-control','no-store')
-  if((p==='/'||p==='/index.html')&&asset.ok&&req.method!=='HEAD'){
-    headers.delete('content-length');headers.delete('content-encoding');headers.delete('etag');headers.delete('last-modified')
-    let html=await asset.text()
-    // Authenticated configuration is loaded by bootstrap, not during rendering.
-    html=html.replace('if (shown[k] == null) continue','if (shown[k] == null || !cfg.symbols[k]) continue')
-    html=html.replace("fetch(authApi.replace(/\\/$/, '') + '/api/verify-code'", "fetch('/api/access/redeem'")
-    html=html.replace("status.textContent = r.status === 429 ? 'Too many attempts. Please wait before trying again.' : r.status >= 500 ? 'Access service unavailable. Try again.' : 'Invalid or already used code.'", "throw new Error(result.error || 'invalid_code')")
-    html=html.replace("catch { status.textContent = 'Network error or timeout. Try again; request a new code if it was already used.' }",  "catch (e) { const messages = { access_signing_secret_mismatch: 'Ошибка настройки: ACCESS_SIGNING_SECRET в Alerts не совпадает с Access. Этот код уже погашен; после исправления получите новый.', too_many_attempts: 'Слишком много попыток. Подождите 15 минут и получите новый код.', invalid_or_expired_code: 'Код истёк или уже использован. Получите новый код Alerts в Access.', invalid_code: 'Введите шестизначный код Alerts.', configuration_incomplete: 'В Alerts не заполнены обязательные настройки.', access_connection_failed: 'Нет связи между Alerts и Access. Сообщите об этой ошибке.', access_unexpected_response: 'Cloudflare вернул неожиданный ответ вместо Access. Сообщите об этой ошибке.', service_unavailable: 'Access вернул внутреннюю ошибку. Сообщите об этой ошибке.' }; status.textContent = messages[e.message] || 'Не удалось выполнить вход. Проверьте соединение и адрес приложения. Если повторяется — сообщите об ошибке.' }")
-    html=html.replace("setInterval(() => tick().catch(() => {}), 400)", "setInterval(() => {if (!document.hidden) tick().catch(() => {})}, 1000)")
-    html=html.replace("sym + ' · live'", "sym + ' · streaming'")
-    html=html.replace(/\/\/ smooth glide of displayed prices[\s\S]*?(?=const QUOTE_CACHE_KEY)/, `// Display actual snapshots only, never animated intermediate prices.
-function frame() {
-  for (const k in shown) if (!cfg.symbols[k]) delete shown[k]
-  for (const k in prices) if (cfg.symbols[k] && Number.isFinite(prices[k].price)) shown[k] = prices[k].price
-  const state = s => window.quoteState(s, prices[s])
-  $('#price').textContent = fmt(sym, shown[sym])
-  $('#psub').textContent = sym + ' · ' + state(sym)
-  document.querySelectorAll('.asset').forEach(t => { const s=t.dataset.s, stale=state(s) !== 'streaming'; t.querySelector('span').textContent = fmt(s, shown[s]) + (shown[s] != null && stale ? ' · last' : ''); t.title = state(s); t.dataset.stale = String(stale) })
-  requestAnimationFrame(frame)
-}
-
-`)
-    html=html.replace('Run <b>node server.js</b> in the project folder,<br>then open <b>http://localhost:3000</b>', 'Check /health and complete /setup.html before using Alerts. If setup is complete, retry shortly.')
-    return new Response(html,{status:asset.status,headers})
-  }
   return new Response(asset.body,{status:asset.status,headers})
 }
 export default {

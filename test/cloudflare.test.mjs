@@ -75,7 +75,7 @@ function local(snapshot={main:emptyMain()}){
 const mockFetch=(input,init)=>outbound(new Request(input,init))
 
  test('no Redis configuration required, no automatic empty initialization or activation',async()=>{
-  const r=await request('/health',null,{},'GET');assert.equal(r.status,503);assert.equal(r.data.error,'storage_not_initialized');assert.equal(telegram.length,0);assert.equal(streamStarts,0)
+  const r=await request('/health',null,{},'GET');assert.equal(r.status,503);assert.equal(r.data.error,'storage_not_initialized');assert.equal(r.data.storage,undefined);assert.equal((await request('/health',null,{'x-setup-secret':WEBHOOK},'GET')).data.storage,'sqlite');assert.equal(telegram.length,0);assert.equal(streamStarts,0)
   assert.equal((await api('prices')).status,503);assert.equal((await admin('activate',{confirmBot:botName})).status,409)
  })
  test('admin secrets protect initialization; Access bot is rejected',async()=>{
@@ -109,7 +109,10 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   assert.equal((await admin('activate',{confirmBot:'wrong'})).status,400)
   assert.equal((await admin('activate',{confirmBot:botName})).status,200)
   await waitFor(()=>streamStarts>0)
-  const r=await request('/health',null,{},'GET');assert.equal(r.data.storage,'sqlite');assert.equal(r.data.quoteMode,'stream');assert.equal(r.data.enabled,true);assert.equal(r.data.feed.pricing.oandaSide,'bid');assert.equal(r.data.feed.pricing.oandaEnvironment,'practice')
+  const pub=await request('/health',null,{},'GET');assert.equal(pub.status,200);assert.deepEqual(pub.data,{ok:true},'Public health has no internal details')
+  assert.equal((await request('/api/feed-status',null,{},'GET')).status,403,'Feed diagnostics need the setup secret')
+  assert.equal((await request('/api/feed-status',null,{'x-setup-secret':WEBHOOK},'GET')).data.mode,'stream')
+  const r=await request('/health',null,{'x-setup-secret':WEBHOOK},'GET');assert.equal(r.data.storage,'sqlite');assert.equal(r.data.quoteMode,'stream');assert.equal(r.data.enabled,true);assert.equal(r.data.feed.pricing.oandaSide,'bid');assert.equal(r.data.feed.pricing.oandaEnvironment,'practice')
  })
  test('server reset rejects old signed sessions on protected reads and writes without deleting user data',async()=>{
   const before=await getMain(),old=sign(uid,'alerts',{iat:ALERTS_SESSION_NOT_BEFORE-1})
@@ -197,7 +200,7 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   await waitFor(()=>telegram.filter(x=>x.payload?.text?.includes('ARTIFICIAL BUDGET ')).length===45,15000)
   const messages=telegram.filter(x=>x.payload?.text?.includes('ARTIFICIAL BUDGET '));assert.equal(new Set(messages.map(x=>x.payload.text)).size,45)
   assert.equal((await getMain()).events.filter(x=>x.text?.includes('ARTIFICIAL BUDGET ')&&x.delivery==='pending').length,0)
-  assert.ok((await request('/health',null,{},'GET')).data.windowOutboundRequests<=40)
+  assert.ok((await request('/health',null,{'x-setup-secret':WEBHOOK},'GET')).data.windowOutboundRequests<=40)
  })
  test('private export includes state and reminder claims and is inaccessible without setup secret',async()=>{
   assert.equal((await request('/admin/export',{})).status,403)
@@ -205,8 +208,8 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   const {db,store}=local(null);try{store.initialize(r.data.snapshot);assert.equal(JSON.parse(await store.command(['GET','tg-alerts-db'])).alerts.length,(await getMain()).alerts.length)}finally{db.close()}
  })
  test('stop and restart preserve data, disabled flag and successful webhook history',async()=>{
-  await admin('stop');await waitFor(async()=>(await request('/health',null,{},'GET')).data.schedulerActive===false)
-  closeStreams();await mf.dispose();await boot();const h=await request('/health',null,{},'GET');assert.equal(h.data.enabled,false);assert.equal((await getMain()).migrationMarker,'preserve')
+  await admin('stop');await waitFor(async()=>(await request('/health',null,{'x-setup-secret':WEBHOOK},'GET')).data.schedulerActive===false)
+  closeStreams();await mf.dispose();await boot();const h=await request('/health',null,{'x-setup-secret':WEBHOOK},'GET');assert.equal(h.data.enabled,false);assert.equal((await getMain()).migrationMarker,'preserve')
   await admin('activate',{confirmBot:botName});const before=telegram.filter(x=>x.method==='sendMessage').length
   assert.equal((await request('/telegram/webhook',{update_id:100,message:{chat:{id:Number(uid),type:'private'},from:{id:Number(uid)},text:'/start'}},{'x-telegram-bot-api-secret-token':WEBHOOK})).status,200)
   assert.equal(telegram.filter(x=>x.method==='sendMessage').length,before);await admin('stop')
@@ -304,3 +307,11 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
    if(scenario.expect)assert.ok(scheduled>=Date.now()-1000&&scheduled<Date.now()+1000);else assert.equal(scheduled,null)
   }
  })
+test('public health does not name missing settings; the setup secret shows them',async()=>{
+ const mf2=new Miniflare(convertV4MiniflareOptions({name:'alerts-missing',modules:true,scriptPath:'.cf-test/worker.js',compatibilityDate:'2026-10-22',compatibilityFlags:['nodejs_compat'],durableObjects:{ALERTS:{className:'AlertsEngine',useSQLite:true}},bindings:{TELEGRAM_WEBHOOK_SECRET:WEBHOOK,PRICE_SOURCE:'oanda'},serviceBindings:{ASSETS:async()=>new Response('')}}))
+ try{
+  const pub=await mf2.dispatchFetch('https://alerts.test/health'),full=await mf2.dispatchFetch('https://alerts.test/health',{headers:{'x-setup-secret':WEBHOOK}})
+  assert.equal(pub.status,503);assert.deepEqual(await pub.json(),{ok:false,error:'configuration_incomplete'})
+  assert.deepEqual((await full.json()).missing,['BOT_TOKEN','ACCESS_SIGNING_SECRET','OANDA_TOKEN'])
+ }finally{await mf2.dispose()}
+})

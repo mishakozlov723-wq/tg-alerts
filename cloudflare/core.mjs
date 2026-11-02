@@ -1,6 +1,6 @@
 import { createAlertIcons } from './asset-icons.mjs'
 import { createUserAdmin } from './admin-users.mjs'
-// Cloudflare adapter: API and Telegram business rules retained from server.js.
+// Cloudflare adapter: API and Telegram business rules.
 // Cloudflare production entrypoint. One DO owns synchronous SQLite commits;
 // broker ingestion is serialized, background network waits are independent.
 import crypto from 'node:crypto'

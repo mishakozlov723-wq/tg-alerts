@@ -273,8 +273,10 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
 <link rel="stylesheet" href="/alert-refinements.css">
 <script>
 const tg = window.Telegram?.WebApp
-if (tg?.initData) {
-  tg.ready(); tg.expand()
+// Inside Telegram, show and expand the app even when the launch carries no
+// initData (keyboard buttons, some clients); outside Telegram stay inert.
+if (tg && (tg.initData || (tg.platform && tg.platform !== 'unknown'))) {
+  try { tg.ready?.(); tg.expand?.() } catch {}
   try { tg.setHeaderColor('#191919'); tg.setBackgroundColor('#191919'); tg.setBottomBarColor?.('#191919') } catch {}
 }
 const $ = (s) => document.querySelector(s)

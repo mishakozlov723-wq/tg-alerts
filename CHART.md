@@ -70,4 +70,4 @@ Node >=20; проверки запускаются на Node 24.
 - `node test/chart-preview.mjs` — изолированный сервер: искусственные OANDA, настоящий локальный core/auth/CRUD/SQLite. Использовать URL из вывода. Ничего не отправляет Telegram и не обращается к боевому OANDA.
 - `node test/chart-browser.mjs http://127.0.0.1:PORT` — браузерный smoke (playwright-core, установленный Edge), только URL локального стенда. Проверяет отсутствие draft от тапа, удержание/движение/плюс, EUR CRUD, реальное изменение price range при drag, эмуляцию touch-hold, четыре TF и переключение EUR/GBP. Сохраняет test/chart-revision.png. Это не физический телефон и не Telegram WebView.
 
-Эти проверки не затрагивают реальную доставку Telegram, боевой OANDA, телефонные жесты и production-квоты. `npm start` не запускает старый server.js; для Cloudflare-превью он не нужен.
+Эти проверки не затрагивают реальную доставку Telegram, боевой OANDA, телефонные жесты и production-квоты.

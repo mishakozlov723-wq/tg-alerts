@@ -215,10 +215,13 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
   <section id="p-news" class="hide">
     <div class="eyebrow">High impact</div>
     <h1>News.</h1>
+    <div class="setting-row"><div><b>News notifications</b></div><button id="newsEnabled" class="switch" type="button" role="switch" aria-checked="false" aria-label="News notifications" disabled></button></div>
+    <div id="newsDetails" class="setting-details" inert aria-disabled="true">
     <div class="eyebrow lbl">Notify before (min)</div>
     <div class="opt" id="lead"></div>
     <div class="eyebrow lbl">Currencies</div>
     <div class="opt" id="cur"></div>
+    </div>
     <div id="nlist"></div>
   </section>
   <section id="p-live" class="hide">
@@ -594,18 +597,55 @@ function editAlert(id, focus = true) {
   inp.onkeydown = (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); save() } }
 }
 
-async function loadNews() {
-  settings = await api('/api/settings')
-  $('#lead').innerHTML = [30, 15, 5, 1].map((m) => `<button data-m="${m}" class="${settings.lead.includes(m) ? 'on' : ''}">${m}</button>`).join('')
-  $('#cur').innerHTML = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'NZD'].map((c) => `<button data-c="${c}" class="${settings.currencies.includes(c) ? 'on' : ''}">${c}</button>`).join('')
-  const tog = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v])
-  $('#lead').querySelectorAll('button').forEach((b) => b.onclick = async () => { settings.lead = tog(settings.lead, +b.dataset.m); await api('/api/settings', { method: 'POST', body: JSON.stringify(settings) }); loadNews() })
-  $('#cur').querySelectorAll('button').forEach((b) => b.onclick = async () => { settings.currencies = tog(settings.currencies, b.dataset.c); await api('/api/settings', { method: 'POST', body: JSON.stringify(settings) }); loadNews() })
-  const news = (await api('/api/news')).filter((n) => n.time > Date.now() - 3600e3)
+// News settings: one switch like H4 — off dims the options below; chips are built once
+// and updated in place (no re-render flicker). Opening the tab never subscribes.
+let newsItems = [], newsBusy = false
+function renderNewsSettings() {
+  const on = !!settings.enabled, ready = !!settings.loaded
+  $('#newsEnabled').disabled = !ready
+  $('#newsEnabled').setAttribute('aria-checked', String(on))
+  $('#newsDetails').inert = !on
+  $('#newsDetails').setAttribute('aria-disabled', String(!on))
+  const chips = (id, values, key, attr) => {
+    const box = $(id)
+    values.forEach((v) => {
+      let b = box.querySelector(`[data-${attr}="${v}"]`)
+      if (!b) {
+        b = document.createElement('button'); b.type = 'button'; b.dataset[attr] = v; b.textContent = v
+        b.onclick = () => { const cur = settings[key] || [], val = key === 'lead' ? +v : v; saveNews({ [key]: cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val] }) }
+        box.append(b)
+      }
+      const sel = (settings[key] || []).includes(key === 'lead' ? +v : v)
+      b.classList.toggle('on', sel); b.setAttribute('aria-pressed', String(sel)); b.disabled = !on
+    })
+  }
+  chips('#lead', [30, 15, 5, 1], 'lead', 'm')
+  chips('#cur', ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'NZD'], 'currencies', 'c')
+}
+function renderNewsList() {
+  const news = newsItems
   $('#nlist').innerHTML = news.length ? news.map((n) => `
     <div class="item" style="${settings.currencies.includes(n.currency) ? '' : 'opacity:.35'}"><div>
       <div class="t"><span class="dotr"></span>${esc(n.currency)}<em>${esc(n.title)}</em></div>
       <small>${new Date(n.time).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}${n.forecast ? ' · forecast ' + esc(n.forecast) : ''}${n.previous ? ' · prev ' + esc(n.previous) : ''}</small></div></div>`).join('') : '<div class="empty">No upcoming news.</div>'
+}
+async function saveNews(change) {
+  if (newsBusy || !settings.loaded) return
+  const prev = settings, next = { ...settings, ...change }
+  settings = next; renderNewsSettings(); renderNewsList(); newsBusy = true
+  try {
+    const r = await api('/api/settings', { method: 'POST', body: JSON.stringify({ enabled: next.enabled, lead: next.lead, currencies: next.currencies }) })
+    if (r.error) throw new Error(r.error)
+    settings = { ...r, loaded: true }
+  } catch { settings = prev; toast('News settings not saved') }
+  finally { newsBusy = false; renderNewsSettings(); renderNewsList() }
+}
+$('#newsEnabled').onclick = () => saveNews({ enabled: !settings.enabled })
+async function loadNews() {
+  if (!newsBusy) settings = { ...(await api('/api/settings')), loaded: true }
+  renderNewsSettings()
+  newsItems = (await api('/api/news')).filter((n) => n.time > Date.now() - 3600e3)
+  renderNewsList()
 }
 
 function toast(t) { const e = $('#toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => (e.style.display = 'none'), 5000) }

@@ -95,6 +95,7 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
  test('setup and app scripts parse, display polls every second without snapshot interpolation',async()=>{
   for(const p of ['/','/index.html','/setup.html']){
    const r=await request(p,null,{},'GET');assert.equal(r.status,200)
+   if(p!=='/setup.html'){assert.equal(r.headers.get('referrer-policy'),'no-referrer');assert.equal(r.headers.get('x-content-type-options'),'nosniff');assert.notEqual(r.headers.get('cache-control'),'no-store')}
    for(const m of r.data.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g))new Script(m[1])
    if(p!=='/setup.html') {
     assert.ok(!r.data.includes('OANDA streaming quotes. Display refreshes every second. Broker and Telegram delays still apply.'))

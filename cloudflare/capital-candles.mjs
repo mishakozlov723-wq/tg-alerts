@@ -44,7 +44,7 @@ export function createCapitalCandles(env, store, now = Date.now) {
         }
       } catch(e) { if (e.storageFailure) throw e }
       return { snapshot, next: 0, job: null, restored: !!snapshot }
-    })())
+    })().catch(e => { slots.delete(slotKey); throw e })) // A storage failure must not stick until restart.
     const s = await slots.get(slotKey)
     if (!s.job && now() >= s.next) {
       s.next = now() + 60000

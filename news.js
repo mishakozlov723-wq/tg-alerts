@@ -125,3 +125,15 @@ function mockNews() {
     mk('ECB Press Conference (test)', 'EUR', 1500, '', ''),
   ]
 }
+
+// Legacy server: sent-news markers keep the event time and are dropped a week
+// after it. Old markers (value 1) have no age; they get a week from now.
+export const SENT_NEWS_TTL_MS = 7 * 86400000
+export function pruneSentNews(sentNews, now = Date.now()) {
+  let changed = false
+  for (const [key, at] of Object.entries(sentNews)) {
+    if (typeof at !== 'number' || at < 1e12) { sentNews[key] = now; changed = true }
+    else if (now - at > SENT_NEWS_TTL_MS) { delete sentNews[key]; changed = true }
+  }
+  return changed
+}

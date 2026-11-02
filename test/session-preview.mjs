@@ -10,7 +10,7 @@ const server = http.createServer(async (req, res) => {
   const json = (data, status = 200) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)) }
   if (path === '/fixture/expire') { expired = true; return json({ ok: true }) }
   if (path === '/fixture/reject-note') { rejectNote = !rejectNote; return json({ ok: true, rejectNote }) }
-  if (path === '/fixture-access/api/verify-code') {
+  if (path === '/api/access/redeem') {
     const chunks = []; for await (const c of req) chunks.push(c)
     if (JSON.parse(Buffer.concat(chunks)).code !== '123456') return json({ error: 'invalid_code' }, 401)
     expired = false; return json({ token: 'fixture-session' })

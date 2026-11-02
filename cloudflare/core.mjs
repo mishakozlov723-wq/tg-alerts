@@ -5,7 +5,7 @@ import { createUserAdmin } from './admin-users.mjs'
 // broker ingestion is serialized, background network waits are independent.
 import crypto from 'node:crypto'
 import { verifyAccessToken } from '../shared/access-token.mjs'
-import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner } from '../h4.js'
+import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner, createH4StatusBoard } from '../h4.js'
 import { createH4Store } from '../h4-store.js'
 import { createLiveStore, LiveConflict } from '../live-store.js'
 import { newReminder, editReminder, liveIdValid, liveView, createLiveRunner } from '../live.js'
@@ -33,7 +33,9 @@ const ACCESS_SIGNING_SECRET = env.ACCESS_SIGNING_SECRET || ''
 const AUTH_API_URL = env.AUTH_API_URL || 'https://retocker-access.retocker.workers.dev'
 const REQUIRE_ACCESS = env.REQUIRE_ACCESS === 'true' || Boolean(ACCESS_SIGNING_SECRET)
 const MOCK = (env.PRICE_SOURCE || 'mock') === 'mock'
-const ADMIN_CHAT_ID = String(env.ADMIN_CHAT_ID || '1011596614')
+// One admin for payments, admin commands and monitoring: the numeric ADMIN_CHAT_ID
+// (set in wrangler.jsonc). No built-in fallback ID; without it admin features are off.
+const ADMIN_CHAT_ID = /^\d+$/.test(String(env.ADMIN_CHAT_ID || '')) ? String(env.ADMIN_CHAT_ID) : ''
 const PREMIUM_PRICE = Number(env.PREMIUM_PRICE_RUB || 350)
 const PAY_DETAILS = env.PAY_DETAILS || ''
 
@@ -57,23 +59,43 @@ const save = async () => {
   catch (cause) { if (cause.name === 'AbortError') throw cause; const e = new Error('durable_storage_unavailable'); e.storageFailure = true; throw e }
 }
 // The monitoring recipient is deliberately explicit; legacy payment fallback is not authorization.
-const monitorAdmin = /^\d+$/.test(String(env.ADMIN_CHAT_ID || '')) ? String(env.ADMIN_CHAT_ID) : ''
 const monitor = await createMonitor({ store: redis, send: text => {
-  if (!monitorAdmin || !BOT_TOKEN) throw new Error('monitor_recipient_unconfigured')
-  return tg('sendMessage', { chat_id: monitorAdmin, text, reply_markup: statusKeyboard() }, 10000)
+  if (!ADMIN_CHAT_ID || !BOT_TOKEN) throw new Error('monitor_recipient_unconfigured')
+  return tg('sendMessage', { chat_id: ADMIN_CHAT_ID, text, reply_markup: statusKeyboard() }, 10000)
 } })
 const taskErrors = { h4: false, live: false, news: false }
 let lastHousekeeping = monitor.snapshot().housekeepingAt || 0, accessNext = 0
 const telegramHealth = { success: 0, failure: 0, code: '' }
 // Reset of all purchases: drops purchases and orders, and the alerts on paid quotes. Alerts on free quotes stay.
+// /reset_quotes keeps a 30-day backup first; /restore_quotes merges it back
+// without removing anything created after the reset.
+const RESET_BACKUP_KEY = 'tg-alerts:reset-backup:v1', RESET_BACKUP_DAYS = 30
 async function resetQuotes() {
   const owners = Object.keys(db.owned).filter((u) => (db.owned[u] || []).length).length
   const before = db.alerts.length
+  const removed = db.alerts.filter((a) => SYMBOLS[a.symbol] && SYMBOLS[a.symbol].premium)
+  await redis(['SET', RESET_BACKUP_KEY, JSON.stringify({ at: Date.now(), owned: db.owned, orders: db.orders, alerts: removed }), 'EX', String(RESET_BACKUP_DAYS * 86400)])
   db.owned = {}
   db.orders = {}
   db.alerts = db.alerts.filter((a) => !(SYMBOLS[a.symbol] && SYMBOLS[a.symbol].premium))
   await save()
   return { owners, alerts: before - db.alerts.length }
+}
+async function restoreQuotes() {
+  const raw = await redis(['GET', RESET_BACKUP_KEY])
+  if (!raw) return null
+  const backup = JSON.parse(raw), result = { at: backup.at, owners: 0, orders: 0, alerts: 0 }
+  for (const [u, list] of Object.entries(backup.owned || {})) {
+    const merged = [...new Set([...(db.owned[u] || []), ...list])]
+    if (merged.length !== (db.owned[u] || []).length) result.owners++
+    db.owned[u] = merged
+  }
+  for (const [id, o] of Object.entries(backup.orders || {})) if (!db.orders[id]) { db.orders[id] = o; result.orders++ }
+  const ids = new Set(db.alerts.map((a) => a.id))
+  for (const a of backup.alerts || []) if (!ids.has(a.id)) { db.alerts.push(a); result.alerts++ }
+  db.alerts.sort((x, y) => x.id - y.id)
+  await save()
+  return result
 }
 // Existing purchases and paid alerts are preserved during migration.
 // Alert limit: 15 for everybody, 50 for users who bought any paid bundle.
@@ -99,6 +121,20 @@ const nice = (s) => (BUNDLES[s] ? BUNDLES[s].label : SYMBOLS[s].label && SYMBOLS
 const ownsQuote = (uid, s) => Boolean(uid) && (db.owned[uid] || []).includes(s)
 const allowedSyms = (uid) => Object.keys(SYMBOLS).filter((s) => !isPremium(s) || ownsQuote(uid, s))
 const symbolsFor = (uid) => Object.fromEntries(allowedSyms(uid).map((s) => [s, { pip: SYMBOLS[s].pip, digits: SYMBOLS[s].digits }]))
+// Capital quotes are polled, not streamed. A symbol is "in demand" while it can
+// trigger an alert or someone has the app (prices or chart) open; only those are
+// polled every cycle, the rest rarely (schedule in quotes.mjs).
+const CAPITAL_ON = Boolean(env.CAPITAL_API_KEY && env.CAPITAL_IDENTIFIER && env.CAPITAL_PASSWORD)
+const VIEW_TTL_MS = 30000
+const viewedAt = {}
+const markViewed = (syms) => { const now = Date.now(); for (const s of syms) if (SYMBOLS[s]) viewedAt[s] = now }
+function quoteDemand() {
+  const now = Date.now(), hot = new Set()
+  for (const a of db.alerts) if (a.status === 'active' && (!isPremium(a.symbol) || ownsQuote(a.userId, a.symbol))) hot.add(a.symbol)
+  for (const [s, at] of Object.entries(viewedAt)) if (now - at < VIEW_TTL_MS) hot.add(s)
+  return hot
+}
+const capitalPolled = (s) => CAPITAL_ON && (s === 'DXY' || Boolean(SYMBOLS[s]?.capital))
 
 // ---------- notifications ----------
 function trimEvents() {
@@ -109,6 +145,18 @@ function enqueue(userId, text, extra = {}) {
   db.events.push(event)
   trimEvents()
   return event
+}
+// The user's latest settled notification decides: a definite Telegram rejection
+// (Start never pressed, bot blocked, chat not found) is shown in the app.
+const DELIVERY_ISSUE_CODES = [400, 403]
+function deliveryIssue(uid) {
+  if (!uid) return null
+  for (let i = db.events.length - 1; i >= 0; i--) {
+    const e = db.events[i]
+    if (e.userId !== uid || !['sent', 'failed'].includes(e.delivery)) continue
+    return e.delivery === 'failed' && DELIVERY_ISSUE_CODES.includes(e.failedCode) ? { at: e.ts || null, code: e.failedCode } : null
+  }
+  return null
 }
 async function deliverEvent(event) {
   if (event.delivery !== 'pending' || (event.retryAt || 0) > Date.now()) return event.delivery
@@ -133,6 +181,7 @@ async function deliverEvent(event) {
       event.delivery = 'sent'; delete event.retryAt
     } catch (e) {
       event.delivery = e.retrySafe ? 'pending' : e.definite ? 'failed' : 'unknown'
+      if (event.delivery === 'failed' && e.telegramCode) event.failedCode = e.telegramCode
       if (e.retrySafe) event.retryAt = Date.now() + (e.retryAfterMs || 0)
       await save()
       if (e.retrySafe && !e.definite) throw e // Preserve outbound-budget rotation.
@@ -151,8 +200,8 @@ async function notify(userId, text) {
 
 // ---------- OANDA H4 reminders (independent from quote alerts/news) ----------
 const h4Raw = createOandaH4({ env, fetcher: fetch })
-let h4States = {}
-const h4Source = { configured: h4Raw.configured, async get(symbols) { const states = await h4Raw.get(symbols); h4States = states; return states } }
+const h4Board = createH4StatusBoard()
+const h4Source = { configured: h4Raw.configured, async get(symbols) { return h4Board.record(await h4Raw.get(symbols)) } }
 let h4Store = null, h4StoreJob = null, h4StoreRetry = 0
 async function getH4Store() {
   if (h4Store) return h4Store
@@ -280,12 +329,16 @@ function getUserId(req) {
   if (REQUIRE_ACCESS) return null
   const init = req.headers['x-init-data']
   if (init && BOT_TOKEN) {
+    // Only without Access (REQUIRE_ACCESS off). Constant-time signature check and a
+    // fresh auth_date: at most 24 h old and not from the future (1 min clock skew).
     const p = new URLSearchParams(init)
-    const hash = p.get('hash'); p.delete('hash')
+    const hash = p.get('hash') || ''; p.delete('hash')
     const check = [...p.entries()].map(([k, v]) => `${k}=${v}`).sort().join('\n')
     const secret = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest()
-    const calc = crypto.createHmac('sha256', secret).update(check).digest('hex')
-    if (calc === hash) { try { return String(JSON.parse(p.get('user')).id) } catch {} }
+    const calc = crypto.createHmac('sha256', secret).update(check).digest()
+    const given = /^[a-f0-9]{64}$/i.test(hash) ? Buffer.from(hash, 'hex') : null
+    const age = Date.now() - Number(p.get('auth_date')) * 1000
+    if (given && crypto.timingSafeEqual(calc, given) && age >= -60000 && age <= 86400000) { try { return String(JSON.parse(p.get('user')).id) } catch {} }
     return null
   }
   // local mock mode only (no BOT_TOKEN and nothing configured): never trust a client-supplied id in production
@@ -393,17 +446,42 @@ async function grant(uid, s) {
   await save()
 }
 
+// The whole database is one stored value (about 2 MB at most) rewritten on every
+// save, so records that are never read again are pruned: news reminders of past
+// events and payment requests abandoned before "paid". Purchases, approved or
+// declined orders and alerts are kept.
+const NEWS_KEEP_MS = 7 * 86400000, ORDER_KEEP_MS = 30 * 86400000, DB_WARN_BYTES = 1.5 * 1048576
+let nextPrune = 0
+async function pruneDb(now = Date.now()) {
+  if (now < nextPrune) return 0
+  nextPrune = now + 3600000
+  let removed = 0
+  for (const key of Object.keys(db.sentNews)) {
+    // user|country|title|ISO event date|lead: a past event can never be due again.
+    const at = key.split('|').at(-2)
+    if (/^\d{4}-\d{2}-\d{2}T/.test(at) && now - Date.parse(at) > NEWS_KEEP_MS) { delete db.sentNews[key]; removed++ }
+  }
+  for (const [id, o] of Object.entries(db.orders)) if (o.status === 'new' && Number.isFinite(o.ts) && now - o.ts > ORDER_KEEP_MS) { delete db.orders[id]; removed++ }
+  if (removed) await save()
+  return removed
+}
+
 async function refreshDiagnostics() {
   const now = Date.now(), warm = now - engineBornAt < 30000
-  await redis(['GET', 'tg-alerts-db']) // Exercise the real storage, not just in-memory objects.
-  monitor.sample('storage', 'SQLite', 'ok', 'Основная база доступна; записи подтверждаются при реальных изменениях.')
+  const stored = await redis(['GET', 'tg-alerts-db']) // Exercise the real storage, not just in-memory objects.
+  const size = stored ? new TextEncoder().encode(stored).length : 0, big = size > DB_WARN_BYTES
+  monitor.sample('storage', 'SQLite', big ? 'warn' : 'ok', `Основная база доступна; записи подтверждаются при реальных изменениях. Размер базы: ${(size / 1048576).toFixed(2)} МБ из ~2 МБ.${big ? ' База близка к пределу одного значения: нужно удалить старые данные (например, сработавшие алерты).' : ''}`)
   const scheduler = env.RUNTIME_STATUS?.()
   const late = lastHousekeeping && now - lastHousekeeping > 90000
   monitor.sample('scheduler', 'Фоновые задачи', scheduler?.enabled === false || late || monitor.snapshot().schedulerFailed ? 'error' : lastHousekeeping ? 'ok' : 'unknown',
     `Последний полный проход: ${lastHousekeeping ? new Date(lastHousekeeping).toISOString() : 'ещё не завершён'}; окно: ${scheduler ? scheduler.active ? 'активно' : 'между запусками' : 'нет runtime-метрики'}; исходящих запросов: ${scheduler?.calls ?? '—'}.`)
-  const needed = new Set(['EURUSD', 'GBPUSD', 'DXY', ...Object.values(db.owned).flat(), ...db.alerts.filter(a => a.status === 'active').map(a => a.symbol)])
-  const stale = [...needed].filter(s => !quoteFeed.fresh(s)), feed = quoteFeed.status(), open = quoteFeed.marketOpen()
-  const lines = [...needed].map(s => { const p = prices[s]; return `${s}: ${!p ? 'нет цены' : `${quoteFeed.fresh(s) ? 'свежая' : 'последняя'}, возраст источника ${Math.max(0, Math.round((now - p.dataTs) / 1000))} с`}` })
+  const listed = new Set(['EURUSD', 'GBPUSD', 'DXY', ...Object.values(db.owned).flat(), ...db.alerts.filter(a => a.status === 'active').map(a => a.symbol)])
+  const feed = quoteFeed.status(), open = quoteFeed.marketOpen(), demand = quoteDemand()
+  // Polled Capital symbols must be fresh only while in demand and tradeable at the broker.
+  const brokerClosed = s => capitalPolled(s) && ['CLOSED','OFFLINE','SUSPENDED'].includes(feed.capitalDiagnostics?.quotes?.[s]?.marketStatus)
+  const rare = s => capitalPolled(s) && !demand.has(s)
+  const stale = [...listed].filter(s => !rare(s) && !brokerClosed(s) && !quoteFeed.fresh(s))
+  const lines = [...listed].map(s => { const p = prices[s]; return `${s}: ${!p ? 'нет цены' : `${quoteFeed.fresh(s) ? 'свежая' : 'последняя'}, возраст источника ${Math.max(0, Math.round((now - p.dataTs) / 1000))} с`}${brokerClosed(s) ? ' (рынок закрыт у брокера)' : rare(s) ? ' (опрашивается реже: нет активных алертов и открытого приложения)' : ''}` })
   monitor.sample('quotes', 'Котировки', !open ? 'idle' : stale.length ? warm ? 'unknown' : 'error' : feed.connected ? 'ok' : 'warn',
     `${open ? 'Рыночная сессия ожидается' : 'Вне общей Forex-сессии (расписания CFD могут отличаться)'}; источник: ${feed.source}.\n${lines.join('\n')}${feed.errors.capital ? '\nCapital: источник недоступен.' : ''}`)
   const news = newsSource.status()
@@ -415,9 +493,10 @@ async function refreshDiagnostics() {
   monitor.sample('delivery', 'Доставка Telegram', !BOT_TOKEN ? 'error' : overdue.length || uncertain.length || recentFailure ? 'warn' : telegramHealth.success ? 'ok' : 'unknown',
     `В очереди: ${pending.length}, старше 2 мин: ${overdue.length}; failed/unknown/attempting за 24 ч: ${uncertain.length}. Последний подтверждённый sendMessage: ${telegramHealth.success ? new Date(telegramHealth.success).toISOString() : 'пока нет'}; последняя ошибка: ${telegramHealth.code || 'нет в этом запуске'}. Неизвестные доставки не переотправляются вслепую.`)
   const h4Enabled = Object.values(h4Store?.all() || {}).filter(s => s.enabled)
-  const h4Bad = Object.values(h4States).some(s => ['unavailable','unconfigured'].includes(s.status))
+  const h4States = h4Board.current()
+  const h4Bad = Object.values(h4States).some(s => ['unavailable','unconfigured'].includes(s))
   monitor.sample('h4', 'H4-напоминания', !h4Store ? 'error' : !h4Enabled.length ? 'idle' : !h4Source.configured || taskErrors.h4 || h4Bad ? 'error' : Object.keys(h4States).length ? 'ok' : 'unknown',
-    `Активных настроек: ${h4Enabled.length}; OANDA: ${h4Source.configured ? 'настроен' : 'не настроен'}; ${Object.entries(h4States).map(([s,v]) => `${s}: ${v.status}`).join(', ') || 'запросы свечей ещё не требовались'}. Ошибка прохода: ${taskErrors.h4 ? 'да' : 'нет'}.`)
+    `Активных настроек: ${h4Enabled.length}; OANDA: ${h4Source.configured ? 'настроен' : 'не настроен'}; ${Object.entries(h4States).map(([s,v]) => `${s}: ${v}`).join(', ') || 'запросы свечей ещё не требовались'}. Ошибка прохода: ${taskErrors.h4 ? 'да' : 'нет'}.`)
   const reminders = liveStore?.all() || [], outcomes = reminders.flatMap(r => r.deliveries).filter(d => ['failed','unknown','missed'].includes(d.status) && now - (d.at || 0) < 86400000)
   const invalidLive = liveStore?.diagnostics().invalidRecords || 0
   monitor.sample('live', 'Live-напоминания', !liveStore || taskErrors.live ? 'error' : invalidLive || outcomes.length ? 'warn' : reminders.some(r => r.enabled) ? 'ok' : 'idle',
@@ -439,7 +518,7 @@ async function showStatus(section = 'summary') {
   return { text: monitor.render(section), reply_markup: statusKeyboard() }
 }
 
-const userAdmin = createUserAdmin({ db, symbols: SYMBOLS, save, tg, adminId: monitorAdmin, extraIds: async () => {
+const userAdmin = createUserAdmin({ db, symbols: SYMBOLS, save, tg, adminId: ADMIN_CHAT_ID, extraIds: async () => {
   const h4 = await getH4Store(), live = await getLiveStore()
   return [...Object.keys(h4?.all() || {}), ...(live?.all() || []).map(r => r.userId)]
 } })
@@ -452,7 +531,7 @@ async function handleCallback(q) {
   const edit = (text, markup) => (chat ? tg('editMessageText', { chat_id: chat, message_id: mid, text, reply_markup: markup || { inline_keyboard: [] } }) : null)
   let m
   if ((m = data.match(/^status:(summary|all|quotes|news|delivery|h4|live|scheduler|access|logs)$/))) {
-    if (!monitorAdmin || uid !== monitorAdmin || String(chat) !== monitorAdmin || q.message?.chat.type !== 'private') return ans('Admin only')
+    if (!ADMIN_CHAT_ID || uid !== ADMIN_CHAT_ID || String(chat) !== ADMIN_CHAT_ID || q.message?.chat.type !== 'private') return ans('Admin only')
     await ans()
     // Send a fresh report: avoids Telegram's message-not-modified errors on repeated clicks.
     return tg('sendMessage', { chat_id: chat, ...await showStatus(m[1]) })
@@ -488,6 +567,7 @@ async function handleCallback(q) {
       return ans(event?.delivery === 'pending' ? 'Queued. Waiting for confirmation' : 'Already sent, please wait')
     }
     if (o.status !== 'new') return ans('This request is closed')
+    if (!ADMIN_CHAT_ID) return ans('Payments are unavailable right now')
     o.status = 'paid'; o.paidAt = Date.now()
     const event = enqueue(ADMIN_CHAT_ID, `💰 Payment request #${o.id}\n${who(o)}\n${nice(o.symbol)} · ${priceOf(o.symbol)} ₽`, {
       orderId: o.id,
@@ -542,22 +622,31 @@ async function handleUpdate(u) {
   if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
   if (await userAdmin.command(m)) return
   const uid = String(m.from.id), txt = m.text.trim()
-  if (/^\/emoji_test(?:@\w+)?$/i.test(txt) && monitorAdmin && uid === monitorAdmin && String(m.chat.id) === monitorAdmin) {
+  if (/^\/emoji_test(?:@\w+)?$/i.test(txt) && ADMIN_CHAT_ID && uid === ADMIN_CHAT_ID && String(m.chat.id) === ADMIN_CHAT_ID) {
     return alertIcons.test(m.chat.id)
   }
   const statusCommand = txt.match(/^\/status(?:@\w+)?(?:\s+(all|quotes|news|delivery|h4|live|scheduler|access|logs))?$/i)
   if (statusCommand) {
-    if (!monitorAdmin || uid !== monitorAdmin || String(m.chat.id) !== monitorAdmin) return
-    return tg('sendMessage', { chat_id: monitorAdmin, ...await showStatus((statusCommand[1] || 'summary').toLowerCase()) })
+    if (!ADMIN_CHAT_ID || uid !== ADMIN_CHAT_ID || String(m.chat.id) !== ADMIN_CHAT_ID) return
+    return tg('sendMessage', { chat_id: ADMIN_CHAT_ID, ...await showStatus((statusCommand[1] || 'summary').toLowerCase()) })
   }
   if (uid === ADMIN_CHAT_ID) {
     if (/^\/reset_quotes(@\w+)?(\s+confirm)?$/i.test(txt)) {
       if (!/confirm$/i.test(txt)) {
-        await tg('sendMessage', { chat_id: m.chat.id, text: 'This removes ALL purchased quotes and orders for everybody, and deletes alerts on paid quotes (including yours).\n\nTo confirm send:\n/reset_quotes confirm' })
+        await tg('sendMessage', { chat_id: m.chat.id, text: `This removes ALL purchased quotes and orders for everybody, and deletes alerts on paid quotes (including yours). A backup is kept for ${RESET_BACKUP_DAYS} days.\n\nTo confirm send:\n/reset_quotes confirm` })
         return
       }
       const r = await resetQuotes()
-      await tg('sendMessage', { chat_id: m.chat.id, text: `Done. Purchases cleared for ${r.owners} users, ${r.alerts} alerts on paid quotes deleted.` })
+      await tg('sendMessage', { chat_id: m.chat.id, text: `Done. Purchases cleared for ${r.owners} users, ${r.alerts} alerts on paid quotes deleted.\n\nBackup kept for ${RESET_BACKUP_DAYS} days. To undo send:\n/restore_quotes confirm` })
+      return
+    }
+    if (/^\/restore_quotes(@\w+)?(\s+confirm)?$/i.test(txt)) {
+      if (!/confirm$/i.test(txt)) {
+        await tg('sendMessage', { chat_id: m.chat.id, text: 'This returns purchases, orders and paid-quote alerts from the last /reset_quotes backup. Nothing created since then is removed.\n\nTo confirm send:\n/restore_quotes confirm' })
+        return
+      }
+      const r = await restoreQuotes()
+      await tg('sendMessage', { chat_id: m.chat.id, text: r ? `Restored from the backup of ${new Date(r.at).toISOString().slice(0, 16).replace('T', ' ')} UTC: purchases for ${r.owners} users, ${r.orders} orders, ${r.alerts} alerts.` : `No backup found. Backups are kept for ${RESET_BACKUP_DAYS} days.` })
       return
     }
     const g = txt.match(/^\/(grant|revoke)\s+(\d+)\s+(\w+)$/i)
@@ -600,12 +689,13 @@ async function handleHttp(req, res) {
   if (p === '/health') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok') }
   const visitor = getUserId(req)
   if (visitor) await userAdmin.remember({ id: visitor })
-  if (p === '/api/config') return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: symbolsFor(getUserId(req)), quoteMode: 'stream', displayIntervalMs: 1000 })
+  if (p === '/api/config') { const user = getUserId(req); return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: symbolsFor(user), quoteMode: 'stream', displayIntervalMs: 1000, deliveryIssue: deliveryIssue(user) }) }
   if (p === '/api/feed-status') return json(res, 200, quoteFeed.status())
   if (p === '/api/prices') {
     const uid = getUserId(req)
     if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' })
     const ok = new Set(allowedSyms(uid))
+    markViewed(ok)
     return json(res, 200, Object.fromEntries(Object.entries(prices).filter(([k]) => ok.has(k)).map(([k,v]) => [k,{...v,stale:!quoteFeed.fresh(k)}])))
   }
   if (p === '/api/news') { const uid = getUserId(req); if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' }); return json(res, 200, await getNews()) }
@@ -617,6 +707,7 @@ async function handleHttp(req, res) {
   if (p === '/api/chart/candles') {
     if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' })
     if (!allowedSyms(uid).includes(url.searchParams.get('symbol') || 'GBPUSD')) return json(res, 403, { error: 'quote_access_required' })
+    markViewed([url.searchParams.get('symbol') || 'GBPUSD'])
     return json(res, 200, await chartCandles.get(url.searchParams))
   }
 
@@ -790,7 +881,7 @@ return {
     if (monitor.snapshot().parts.requests) { monitor.sample('requests', 'Обработчик запросов', 'ok', 'Telegram update обработан успешно.'); await monitor.flush() }
   },
   async watchdog() {
-    if (!monitorAdmin || env.MONITOR_ALERTS === 'false') return
+    if (!ADMIN_CHAT_ID || env.MONITOR_ALERTS === 'false') return
     const state = monitor.snapshot(), last = state.housekeepingAt || state.startedAt
     if (state.schedulerFailed || Date.now() - last > 120000) {
       monitor.sample('scheduler', 'Фоновые задачи', 'error', 'Recovery cron: успешного фонового прохода нет более 2 минут либо зафиксирован сбой. Проверяется восстановление.')
@@ -798,7 +889,7 @@ return {
     }
   },
   async reportFailure(component = 'scheduler') {
-    if (!monitorAdmin || env.MONITOR_ALERTS === 'false') return
+    if (!ADMIN_CHAT_ID || env.MONITOR_ALERTS === 'false') return
     if (component === 'scheduler') monitor.progress(0)
     monitor.sample(component, component === 'scheduler' ? 'Фоновые задачи' : 'Обработчик запросов', 'error', 'Внутренняя ошибка обработки. Выполняется восстановление; payload и секреты не включены.')
     await monitor.notify()
@@ -806,7 +897,7 @@ return {
   async probe() { return quoteFeed.probe() },
   feedStatus() { return {...quoteFeed.status(), notificationPolicy: { staleWarningDelayMs: FEED_WARNING_DELAY_MS }} },
   async stream(signal, dispatch) { return quoteFeed.stream(onTick, signal, dispatch) },
-  async capital(dispatch) { return quoteFeed.capital(onTick, dispatch) },
+  async capital(dispatch) { return quoteFeed.capital(onTick, dispatch, quoteDemand()) },
   flushEvents,
   async refreshQuotes(dispatch) { return quoteFeed.refresh(onTick, dispatch) },
   async housekeeping() {
@@ -815,6 +906,7 @@ return {
     // Bounded display-cache checkpoint; never write on every market tick.
     await quoteFeed.checkpoint(redis)
     await flushEvents()
+    await pruneDb()
     taskErrors.live = false; taskErrors.h4 = false; taskErrors.news = false
     // A failing subsystem must not prevent checks of the others.
     for (const [key, fn] of [['live', checkLive], ['h4', checkH4], ['news', checkNews]]) {
@@ -823,7 +915,7 @@ return {
     }
     lastHousekeeping = Date.now()
     monitor.progress(lastHousekeeping)
-    if (monitorAdmin && env.MONITOR_ALERTS !== 'false') { await refreshDiagnostics(); await monitor.notify() }
+    if (ADMIN_CHAT_ID && env.MONITOR_ALERTS !== 'false') { await refreshDiagnostics(); await monitor.notify() }
   },
   async inspect() { const h4 = await getH4Store(), live = await getLiveStore(); if (!h4 || !live) throw new Error('reminder_storage_unavailable'); return { alerts: db.alerts.length, activeAlerts: db.alerts.filter(a=>a.status==='active').length, purchases: Object.keys(db.owned).length, h4Users: Object.keys(h4.all()).length, liveReminders: live.all().length } },
 }

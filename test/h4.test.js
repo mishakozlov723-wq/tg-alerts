@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { nextH4Boundary, candleSnapshot, createOandaH4, normalizeH4Settings, defaultH4Settings, dueH4Notifications, h4Message, createH4Runner } from '../h4.js'
+import { nextH4Boundary, candleSnapshot, createOandaH4, normalizeH4Settings, defaultH4Settings, dueH4Notifications, h4Message, createH4Runner, createH4StatusBoard } from '../h4.js'
 import { createH4Store } from '../h4-store.js'
 const ms = Date.parse
 const iso = (n) => new Date(n).toISOString()
@@ -210,4 +210,16 @@ test('delivery claims atomically check current Redis preferences before deduplic
   assert.equal(lastCommand[2],2);assert.match(lastCommand[1],/HGET/);assert.match(lastCommand[1],/NX/)
   value=JSON.stringify({...saved,enabled:false}) // another instance disabled reminders
   assert.equal(await store.claim('event2',start,{uid:'1',settings:saved}),false)
+})
+test('H4 monitor states merge per symbol and expire when no longer requested', () => {
+  let now = 1000
+  const board = createH4StatusBoard({ ttlMs: 600000, clock: () => now })
+  board.record({ GBPUSD: { status: 'live' }, XAUUSD: { status: 'unavailable' } })
+  // A user's status page for one symbol must not hide the runner's other results.
+  now += 1000; board.record({ GBPUSD: { status: 'waiting' } })
+  assert.deepEqual(board.current(), { GBPUSD: 'waiting', XAUUSD: 'unavailable' })
+  now += 600000
+  assert.deepEqual(board.current(), { GBPUSD: 'waiting' }, 'A symbol nobody asked about for 10 minutes drops out')
+  now += 1
+  assert.deepEqual(board.current(), {})
 })

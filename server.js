@@ -5,12 +5,22 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { SYMBOLS, prices, startPrices, setPrice, feedStatus } from './prices.js'
-import { getNews } from './news.js'
+import { getNews, pruneSentNews } from './news.js'
 import { verifyAccessToken } from './shared/access-token.mjs'
 import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner } from './h4.js'
 import { createH4Store } from './h4-store.js'
 import { createLiveStore, LiveConflict } from './live-store.js'
 import { newReminder, editReminder, liveIdValid, liveView, createLiveRunner } from './live.js'
+
+// Production runs on Cloudflare (npm run deploy:cloudflare). This legacy server
+// polls Telegram after deleteWebhook, which would take a production bot away
+// from the worker, so it starts only when asked explicitly: npm run start:legacy.
+if (!process.argv.includes('--legacy')) {
+  console.error('server.js — старый сервер, прод работает на Cloudflare (npm run deploy:cloudflare).\n' +
+    'С боевым BOT_TOKEN он снимет вебхук и заберёт бота у Cloudflare.\n' +
+    'Для локальной разработки с тестовым ботом: npm run start:legacy')
+  process.exit(1)
+}
 
 // Silver is a paid quote from Capital.com (epic can be changed with CAPITAL_EPIC_XAGUSD, shift with OFFSET_XAGUSD).
 if (!SYMBOLS.XAGUSD) SYMBOLS.XAGUSD = { label: 'Silver', premium: true, pip: 0.01, digits: 3, base: 50, capital: process.env.CAPITAL_EPIC_XAGUSD || 'SILVER', offset: Number(process.env.OFFSET_XAGUSD || 0), duka: ['xagusd'] }
@@ -25,7 +35,8 @@ const AUTH_API_URL = process.env.AUTH_API_URL || ''
 const REQUIRE_ACCESS = process.env.REQUIRE_ACCESS === 'true' || Boolean(ACCESS_SIGNING_SECRET)
 const MOCK = (process.env.PRICE_SOURCE || 'mock') === 'mock'
 const DB_FILE = process.env.DB_FILE || path.join(__dir, 'data.json')
-const ADMIN_CHAT_ID = String(process.env.ADMIN_CHAT_ID || '1011596614')
+// Numeric ADMIN_CHAT_ID only; no built-in fallback ID.
+const ADMIN_CHAT_ID = /^\d+$/.test(String(process.env.ADMIN_CHAT_ID || '')) ? String(process.env.ADMIN_CHAT_ID) : ''
 const PREMIUM_PRICE = Number(process.env.PREMIUM_PRICE_RUB || 350)
 const PAY_DETAILS = process.env.PAY_DETAILS || ''
 
@@ -218,6 +229,7 @@ function onTick(sym, price) {
 async function checkNews() {
   const items = await getNews()
   const now = Date.now()
+  if (pruneSentNews(db.sentNews, now)) save()
   for (const userId of Object.keys(db.settings)) {
     const s = db.settings[userId]
     for (const n of items) {
@@ -227,7 +239,7 @@ async function checkNews() {
         if (minsLeft > lead || minsLeft <= lead - 1.5) continue
         const key = `${userId}|${n.id}|${lead}`
         if (db.sentNews[key]) continue
-        db.sentNews[key] = 1
+        db.sentNews[key] = n.time || now
         const extra = n.forecast || n.previous ? `\nForecast: ${n.forecast || '-'} · Prev: ${n.previous || '-'}` : ''
         await notify(userId, `🔴 ${n.currency} ${n.title}\nIn ${lead} min${extra}`)
       }
@@ -242,12 +254,15 @@ function getUserId(req) {
   if (REQUIRE_ACCESS) return null
   const init = req.headers['x-init-data']
   if (init && BOT_TOKEN) {
+    // Constant-time signature check and a fresh auth_date (24 h, 1 min clock skew).
     const p = new URLSearchParams(init)
-    const hash = p.get('hash'); p.delete('hash')
+    const hash = p.get('hash') || ''; p.delete('hash')
     const check = [...p.entries()].map(([k, v]) => `${k}=${v}`).sort().join('\n')
     const secret = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest()
-    const calc = crypto.createHmac('sha256', secret).update(check).digest('hex')
-    if (calc === hash) { try { return String(JSON.parse(p.get('user')).id) } catch {} }
+    const calc = crypto.createHmac('sha256', secret).update(check).digest()
+    const given = /^[a-f0-9]{64}$/i.test(hash) ? Buffer.from(hash, 'hex') : null
+    const age = Date.now() - Number(p.get('auth_date')) * 1000
+    if (given && crypto.timingSafeEqual(calc, given) && age >= -60000 && age <= 86400000) { try { return String(JSON.parse(p.get('user')).id) } catch {} }
     return null
   }
   // local mock mode only (no BOT_TOKEN and nothing configured): never trust a client-supplied id in production
@@ -472,11 +487,20 @@ const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'applic
 const body = (req) => new Promise((ok) => { let d = ''; req.on('data', (c) => (d += c)); req.on('end', () => { try { ok(JSON.parse(d || '{}')) } catch { ok({}) } }) })
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' }
 
-// Small on-the-fly fixes for the page: reload the quote list after sign-in and ignore quotes the page does not know yet.
-function patchIndex(html) {
-  return html
-    .replace('renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)', () => "cfg = await api('/api/config'); renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)")
-    .replace('if (shown[k] == null) continue', () => 'if (shown[k] == null || !cfg.symbols[k]) continue')
+// The page redeems Access codes through its own origin, like the Cloudflare worker.
+async function redeemAccessCode(req, res) {
+  if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' })
+  if (!AUTH_API_URL || !ACCESS_SIGNING_SECRET) return json(res, 503, { error: 'configuration_incomplete' })
+  const b = await body(req)
+  if (!/^\d{6}$/.test(String(b.code || ''))) return json(res, 400, { error: 'invalid_code' })
+  const at = String(Date.now()), client = crypto.createHmac('sha256', ACCESS_SIGNING_SECRET).update('client-ip:' + (req.socket.remoteAddress || 'unknown')).digest('hex')
+  const signature = crypto.createHmac('sha256', ACCESS_SIGNING_SECRET).update(`alerts-client:${at}:${client}`).digest('hex')
+  let r, j
+  try { r = await fetch(new URL('/api/verify-code', AUTH_API_URL), { method: 'POST', headers: { 'content-type': 'application/json', 'x-access-client': client, 'x-access-client-time': at, 'x-access-client-signature': signature }, body: JSON.stringify({ project: 'alerts', code: b.code }), redirect: 'manual', signal: AbortSignal.timeout(10000) }) }
+  catch { return json(res, 502, { error: 'access_connection_failed' }) }
+  try { j = await r.json() } catch { return json(res, 502, { error: 'access_unexpected_response' }) }
+  if (j.token && !verifyAccessToken(j.token, 'alerts', ACCESS_SIGNING_SECRET)) return json(res, 503, { error: 'access_signing_secret_mismatch' })
+  return json(res, r.status, j)
 }
 
 const server = http.createServer(async (req, res) => {
@@ -487,10 +511,10 @@ const server = http.createServer(async (req, res) => {
     const f = path.join(__dir, 'public', p === '/' ? 'index.html' : p)
     if (!f.startsWith(path.join(__dir, 'public')) || !fs.existsSync(f)) { res.writeHead(404); return res.end('not found') }
     res.writeHead(200, { 'content-type': mime[path.extname(f)] || 'text/plain' })
-    if (path.basename(f) === 'index.html') return res.end(patchIndex(fs.readFileSync(f, 'utf8')))
     return res.end(fs.readFileSync(f))
   }
 
+  if (p === '/api/access/redeem') return redeemAccessCode(req, res)
   if (p === '/api/config') return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: symbolsFor(getUserId(req)) })
   if (p === '/api/prices') {
     const uid = getUserId(req)

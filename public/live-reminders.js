@@ -1,4 +1,4 @@
-import { normalizeLive } from './live-time.js'
+import { normalizeLive, newRequestId } from './live-time.js'
 const el = (id) => document.getElementById(id)
 const labels = { once: 'Once', daily: 'Daily', weekdays: 'Weekdays', weekly: 'Weekly' }
 let rows = [], configured = false, busy = false, loading = false, editing = null, createId = null, repeat = 'once', error = '', uncertain = false
@@ -95,7 +95,7 @@ function fillZones(selected) {
 }
 function open(row = null) {
   if (busy || uncertain) return
-  editing = row; createId = row ? null : crypto.randomUUID(); repeat = row?.repeat || 'once'
+  editing = row; createId = row ? null : newRequestId(); repeat = row?.repeat || 'once'
   el('liveText').value = row?.text || ''
   const start = new Date(now() + 3600000)
   el('liveDate').value = row?.date || localDate(+start)

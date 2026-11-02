@@ -8,7 +8,7 @@ async function fixture() {
  const db = new DatabaseSync(':memory:')
  const store = createLocalStore({sql:{exec:(q,...a)=>db.prepare(q).all(...a)},transactionSync:fn=>fn()})
  store.initialize({main:emptyMain()})
- let price=1.3, stale=false, closed=false, now=Date.now(), core
+ let price=1.3, stale=false, closed=false, now=Date.parse('2026-10-28T12:00:00Z'), core // FX session open
  const clock=Date.now; Date.now=()=>now
  const env={LOCAL_STORE:store,PRICE_SOURCE:'mock',MONITOR_ALERTS:'false',OANDA_TOKEN:'artificial',OANDA_ACCOUNT:'fixture',OANDA_SIDE:'mid',FETCH:async url=>{
   if(url.includes('/pricing?'))return Response.json({prices:[{instrument:'GBP_USD',time:new Date(now-(stale?120000:0)).toISOString(),tradeable:!closed,bids:[{price:String(price)}],asks:[{price:String(price)}]}]})

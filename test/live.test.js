@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { normalizeLive, localToUtc, LIVE_GRACE_MS } from '../public/live-time.js'
+import { normalizeLive, localToUtc, LIVE_GRACE_MS, newRequestId } from '../public/live-time.js'
 import { createLiveStore, LiveConflict } from '../live-store.js'
-import { newReminder, liveView, liveMessage, createLiveRunner } from '../live.js'
+import { newReminder, liveView, liveMessage, createLiveRunner, liveIdValid } from '../live.js'
 const id = '12345678-1234-4234-8234-123456789abc'
 const now = Date.parse('2026-03-01T00:00Z')
 const config = {text:'Take second phone',date:'2026-03-02',times:['09:00'],timezone:'America/New_York',repeat:'once',count:1}
@@ -186,4 +186,12 @@ test('failed recipient does not block another user, note text not logged',async(
     await createLiveRunner({store,clock:()=>a.deliveries[0].at,deliver:async(uid)=>{if(uid==='123')throw new Error(a.config.text);sends.push(uid)},onError:(m)=>errors.push(m)})()
     assert.deepEqual(sends,['456']);assert(errors.every((m)=>!m.includes(a.config.text)))
   }finally{f.cleanup()}
+})
+
+test('reminder request IDs work without crypto.randomUUID (older Telegram WebViews)', () => {
+  for (const c of [globalThis.crypto, { getRandomValues: a => globalThis.crypto.getRandomValues(a) }, undefined]) {
+    const ids = new Set(Array.from({ length: 50 }, () => newRequestId(c)))
+    assert.equal(ids.size, 50)
+    for (const id of ids) { assert.ok(liveIdValid(id), id); assert.match(id, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/) }
+  }
 })

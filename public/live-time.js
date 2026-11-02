@@ -1,6 +1,16 @@
 // Shared browser/server validation. Recurrences keep LOCAL wall-clock time, not +24h UTC.
 export const LIVE_REPEATS = ['once', 'daily', 'weekdays', 'weekly']
 export const LIVE_GRACE_MS = 15 * 60000
+// Request IDs for idempotent creation. Older Telegram WebViews lack randomUUID;
+// fall back to getRandomValues (then Math.random) in the same lowercase v4 format.
+export function newRequestId(c = globalThis.crypto) {
+  if (c?.randomUUID) return c.randomUUID()
+  const b = new Uint8Array(16)
+  if (c?.getRandomValues) c.getRandomValues(b); else for (let i = 0; i < 16; i++) b[i] = Math.random() * 256 | 0
+  b[6] = b[6] & 15 | 64; b[8] = b[8] & 63 | 128
+  const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
 const formatters = new Map()
 function formatter(zone) {
   if (!formatters.has(zone)) formatters.set(zone, new Intl.DateTimeFormat('en-GB', {

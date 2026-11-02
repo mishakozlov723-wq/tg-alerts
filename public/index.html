@@ -156,6 +156,8 @@ html,body,body *{scrollbar-width:none;-ms-overflow-style:none}
 html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{display:none;width:0;height:0}
 
 #accessRetry[hidden]{display:none!important}
+.delivery-issue{margin:0 0 16px;padding:11px 13px;border:1px solid rgba(255,120,120,.35);border-radius:var(--r);font-size:13px;font-weight:300;line-height:1.45;color:var(--txt)}
+.delivery-issue[hidden]{display:none}
 </style>
 </head>
 <body>
@@ -163,6 +165,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
 <div id="splash"><div id="introStage"></div></div>
 <div id="toast"></div>
 <div class="wrap">
+  <div id="deliveryIssue" class="delivery-issue" role="alert" hidden>Telegram did not deliver your last notification. Open the bot, tap Start and make sure the bot is not blocked.</div>
   <section id="p-new">
     <div class="eyebrow">New alert</div>
     <h1>Set a level.</h1>
@@ -273,8 +276,10 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
 <link rel="stylesheet" href="/alert-refinements.css">
 <script>
 const tg = window.Telegram?.WebApp
-if (tg?.initData) {
-  tg.ready(); tg.expand()
+// Inside Telegram, show and expand the app even when the launch carries no
+// initData (keyboard buttons, some clients); outside Telegram stay inert.
+if (tg && (tg.initData || (tg.platform && tg.platform !== 'unknown'))) {
+  try { tg.ready?.(); tg.expand?.() } catch {}
   try { tg.setHeaderColor('#191919'); tg.setBackgroundColor('#191919'); tg.setBottomBarColor?.('#191919') } catch {}
 }
 const $ = (s) => document.querySelector(s)
@@ -349,12 +354,9 @@ async function ensureAccess(authApi) {
       if (!/^\d{6}$/.test(code)) { status.textContent = 'Enter the 6-digit code.'; return }
       busy = true; control.setBusy(true); status.textContent = 'Checking code…'
       try {
-        const r = await fetch(authApi.replace(/\/$/, '') + '/api/verify-code', { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: 'alerts', code }) })
+        const r = await fetch('/api/access/redeem', { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: 'alerts', code }) })
         const result = await r.json()
-        if (!result.token) {
-          status.textContent = r.status === 429 ? 'Too many attempts. Please wait before trying again.' : r.status >= 500 ? 'Access service unavailable. Try again.' : 'Invalid or already used code.'
-          return
-        }
+        if (!result.token) throw Object.assign(new Error(result.error || 'invalid_code'), { retryAfter: Number(result.retryAfter) })
         try { localStorage.setItem(ACCESS_KEY, result.token) } catch {}
         H['x-access-token'] = result.token
         // Resume hydration first. Keep the gate/busy state until bootstrap (or
@@ -363,7 +365,7 @@ async function ensureAccess(authApi) {
         status.textContent = 'Opening Alerts…'
         window.dispatchEvent(new Event('retocker-access-ready'))
         if (await entered) { status.textContent = ''; control.reset() }
-      } catch { status.textContent = 'Network error or timeout. Try again; request a new code if it was already used.' }
+      } catch (e) { const wait = e.retryAfter > 0 ? Math.ceil(e.retryAfter / 60) : 15; const messages = { access_signing_secret_mismatch: 'Ошибка настройки: ACCESS_SIGNING_SECRET в Alerts не совпадает с Access. Этот код уже погашен; после исправления получите новый.', too_many_attempts: `Слишком много попыток. Подождите ${wait} мин и получите новый код.`, invalid_or_expired_code: 'Код истёк или уже использован. Получите новый код Alerts в Access.', invalid_code: 'Введите шестизначный код Alerts.', configuration_incomplete: 'В Alerts не заполнены обязательные настройки.', access_connection_failed: 'Нет связи между Alerts и Access. Сообщите об этой ошибке.', access_unexpected_response: 'Cloudflare вернул неожиданный ответ вместо Access. Сообщите об этой ошибке.', service_unavailable: 'Access вернул внутреннюю ошибку. Сообщите об этой ошибке.' }; status.textContent = messages[e.message] || 'Не удалось выполнить вход. Проверьте соединение и адрес приложения. Если повторяется — сообщите об ошибке.' }
       finally { busy = false; control.setBusy(false) }
     } })
   }
@@ -608,22 +610,14 @@ async function loadNews() {
 
 function toast(t) { const e = $('#toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => (e.style.display = 'none'), 5000) }
 
-// smooth glide of displayed prices toward the real ones
-let lastT = performance.now()
-const TAU = 1500 // ms per stage: bigger = slower, softer glide
-const mid = {} // two chained smoothers = soft start AND soft finish
-function frame(now) {
-  const dt = Math.min(100, now - lastT); lastT = now
-  const k0 = 1 - Math.exp(-dt / TAU)
-  for (const k in prices) {
-    if (shown[k] == null) continue
-    if (mid[k] == null) mid[k] = shown[k]
-    mid[k] += (prices[k].price - mid[k]) * k0
-    const d = mid[k] - shown[k]
-    shown[k] = Math.abs(prices[k].price - shown[k]) < cfg.symbols[k].pip * 0.02 ? prices[k].price : shown[k] + d * k0
-  }
+// Display actual snapshots only, never animated intermediate prices.
+function frame() {
+  for (const k in shown) if (!cfg.symbols[k]) delete shown[k]
+  for (const k in prices) if (cfg.symbols[k] && Number.isFinite(prices[k].price)) shown[k] = prices[k].price
+  const state = s => window.quoteState(s, prices[s])
   $('#price').textContent = fmt(sym, shown[sym])
-  document.querySelectorAll('.asset').forEach((t) => (t.querySelector('span').textContent = fmt(t.dataset.s, shown[t.dataset.s])))
+  $('#psub').textContent = sym + ' · ' + state(sym)
+  document.querySelectorAll('.asset').forEach(t => { const s=t.dataset.s, stale=state(s) !== 'streaming'; t.querySelector('span').textContent = fmt(s, shown[s]) + (shown[s] != null && stale ? ' · last' : ''); t.title = state(s); t.dataset.stale = String(stale) })
   requestAnimationFrame(frame)
 }
 
@@ -644,15 +638,26 @@ function saveQuotes() {
   try { localStorage.setItem(QUOTE_CACHE_KEY, JSON.stringify({ version: 1, mock: !!cfg.mock, prices })) } catch {}
 }
 let eventsBusy = false, eventsReady = false
+// Telegram's answer may come after an event was first seen: recheck unsettled
+// events (up to 10 min old) and show a definite rejection in the app.
+const unsettledEvents = new Set()
+function showDeliveryIssue(issue) { $('#deliveryIssue').hidden = !issue }
 async function pollEvents() {
   if (eventsBusy) return
   eventsBusy = true
   try {
-    const ev = await api('/api/events?since=' + lastEvent, { signal: AbortSignal.timeout(10000) })
+    const since = unsettledEvents.size ? Math.min(lastEvent, ...unsettledEvents) - 1 : lastEvent
+    const ev = await api('/api/events?since=' + since, { signal: AbortSignal.timeout(10000) })
     if (!Array.isArray(ev)) return
     for (const e of ev) {
-      lastEvent = Math.max(lastEvent, e.id)
-      if (eventsReady) { if (!tg?.initData) toast(e.text); if (!$('#p-alerts').classList.contains('hide')) loadAlerts().catch(() => {}) }
+      if (e.id > lastEvent) {
+        lastEvent = e.id
+        if (eventsReady) { if (!tg?.initData) toast(e.text); if (!$('#p-alerts').classList.contains('hide')) loadAlerts().catch(() => {}) }
+      }
+      if (['pending', 'attempting'].includes(e.delivery) && Date.now() - (e.ts || 0) < 600000) unsettledEvents.add(e.id)
+      else unsettledEvents.delete(e.id)
+      if (e.delivery === 'sent') showDeliveryIssue(null)
+      else if (e.delivery === 'failed' && [400, 403].includes(e.failedCode)) showDeliveryIssue(e)
     }
     eventsReady = true
   } finally { eventsBusy = false }
@@ -773,6 +778,7 @@ function bootstrap() {
   // Refresh entitlements after code entry, before restoring any paid assets.
   if (cfg.authRequired) cfg = await api('/api/config', { signal: AbortSignal.timeout(10000) })
   if (!cfg.symbols || cfg.error) throw new Error('Configuration unavailable')
+  showDeliveryIssue(cfg.deliveryIssue)
   restoreQuotes()
   renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)
   window.PriceChart?.connect({ api, getQuote: asset => prices[asset] })
@@ -785,7 +791,7 @@ function bootstrap() {
     $('#dbg').classList.remove('hide')
     $('#dbg').querySelectorAll('button').forEach((b) => b.onclick = () => { api('/api/debug/move', { method: 'POST', body: JSON.stringify({ symbol: sym, pips: +b.dataset.p }) }); toast(`${sym} ${+b.dataset.p > 0 ? '+' : ''}${b.dataset.p} pips`) })
   }
-  setInterval(() => tick().catch(() => {}), 400)
+  setInterval(() => {if (!document.hidden) tick().catch(() => {})}, 1000)
   appInitialized = true; $('#accessRetry').hidden = true; whenReady()
   } catch (e) {
     if (accessEntryDone) {

@@ -5,14 +5,10 @@ import http from 'node:http'
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import vm from 'node:vm'
 import assert from 'node:assert/strict'
 const root = fileURLToPath(new URL('../', import.meta.url)), publicDir = path.join(root, 'public')
-let html = readFileSync(path.join(publicDir, 'index.html'), 'utf8')
-const worker = readFileSync(path.join(root, 'cloudflare/worker.mjs'), 'utf8')
-// Exercise the actual production HTML shims too (not just the unpatched asset).
-const transform = worker.slice(worker.indexOf('    let html=await asset.text()') + '    let html=await asset.text()'.length, worker.indexOf('    return new Response(html,'))
-html = vm.runInNewContext('let html = source;\n' + transform + '\nhtml', { source: html })
+// The production page is served as-is: no runtime HTML patching in the worker.
+const html = readFileSync(path.join(publicDir, 'index.html'), 'utf8')
 assert.ok(html.includes("fetch('/api/access/redeem'"))
 let seq = 3, rejectNext = false, failSettings = false, redemptions = 0, configDelay = 0
 let alerts = [
@@ -188,14 +184,17 @@ try {
   assert.equal(await page.locator('#h4Details').evaluate(e=>e.inert),true)
   await page.locator('[data-t=alerts]').click();await page.waitForTimeout(700)
   const deleting = alerts[0].id
-  await page.locator(`.item[data-id="${deleting}"] .x`).click();await page.waitForTimeout(100)
-  assert.ok(await page.locator(`.item[data-id="${deleting}"]`).count(),'Delete has an exit animation')
-  await page.waitForTimeout(500);assert.equal(await page.locator(`.item[data-id="${deleting}"]`).count(),0)
+  await page.locator(`.item[data-id="${deleting}"] .x`).click()
+  // Wait on state, not fixed pauses: the row goes inert and animates out, then leaves the DOM.
+  await page.waitForFunction(id=>{const row=document.querySelector(`.item[data-id="${id}"]`);return row?.inert&&row.getAnimations().length>0},deleting,{timeout:5000})
+  await page.locator(`.item[data-id="${deleting}"]`).waitFor({state:'detached',timeout:5000})
+  assert.equal(await page.locator(`.item[data-id="${deleting}"]`).count(),0)
   // Mobile: clipboard denial, native/manual paste, reduced motion and no horizontal overflow.
   const mobile = await browser.newContext({ viewport:{width:390,height:844},isMobile:true,hasTouch:true })
   await mobile.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort())
-  await mobile.addInitScript(()=>{window.Telegram={WebApp:{platform:'ios'}};Object.defineProperty(navigator,'clipboard',{value:{readText:async()=>{throw new Error('denied')}}})})
+  await mobile.addInitScript(()=>{window.tgCalls=[];window.Telegram={WebApp:{platform:'ios',initData:'',ready(){window.tgCalls.push('ready')},expand(){window.tgCalls.push('expand')}}};Object.defineProperty(navigator,'clipboard',{value:{readText:async()=>{throw new Error('denied')}}})})
   const phone = await mobile.newPage();phone.on('pageerror',e=>errors.push(e.message));await phone.goto(origin)
+  assert.deepEqual(await phone.evaluate(()=>window.tgCalls),['ready','expand'],'Inside Telegram the app is shown and expanded without initData')
   await phone.waitForFunction(()=>document.querySelector('#accessGate').classList.contains('is-visible'));await phone.locator('#splash').waitFor({state:'detached'})
   await phone.locator('#accessAction').click();await phone.waitForTimeout(100)
   assert.match(await phone.locator('#accessStatus').textContent(),/Clipboard unavailable/)

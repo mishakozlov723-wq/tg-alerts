@@ -6,6 +6,18 @@
   let chosen, draft, lines = [], alerts = [], active = false, loadedAt = 0, lastLive = 0, listVersion = 0, historyStale = true
   let candidate = null, holding = false, hold, start, axisDrag, touchActive = false, multiTouch = false, scaleBase = null, candidateTime = null, manualAsset = null, draftDrag = false, mouseHover = false
   let ticketOpen = false, ticketTimer, mutating = false
+  // A lost POST response must not create a second alert on retry: the same
+  // payload keeps the same requestId until the server confirms it.
+  let createAttempt = null
+  function newRequestId() {
+    const c = globalThis.crypto
+    if (c?.randomUUID) return c.randomUUID()
+    const b = new Uint8Array(16)
+    if (c?.getRandomValues) c.getRandomValues(b); else for (let i = 0; i < 16; i++) b[i] = Math.random() * 256 | 0
+    b[6] = b[6] & 15 | 64; b[8] = b[8] & 63 | 128
+    const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('')
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+  }
   function setTicket(open) {
     const ticket = $('#chartTicket')
     const wasOpen = ticketOpen
@@ -342,7 +354,12 @@
     $('#chartAdd').onclick = e => mutate(e.target, async () => {
       const value = $('#chartPrice').value.trim().replace(',','.'), level = Number(value)
       if (!/^\d+(?:\.\d+)?$/.test(value) || !Number.isFinite(level) || level <= 0) throw new Error('Enter a positive price')
-      await call(chosen ? '/api/alerts/'+chosen.id : '/api/alerts', { method:chosen ? 'PATCH' : 'POST', body:JSON.stringify({ symbol, level:Number(level.toFixed(digits())), note:$('#chartNote').value }) })
+      const body = { symbol, level:Number(level.toFixed(digits())), note:$('#chartNote').value }
+      if (chosen) return void await call('/api/alerts/'+chosen.id, { method:'PATCH', body:JSON.stringify(body) })
+      const payload = JSON.stringify(body)
+      if (createAttempt?.payload !== payload) createAttempt = { payload, id: newRequestId() }
+      await call('/api/alerts', { method:'POST', body:JSON.stringify({ ...body, requestId: createAttempt.id }) })
+      createAttempt = null
     })
     $('#chartDelete').onclick = e => { if (chosen) return mutate(e.target, () => call('/api/alerts/'+chosen.id, {method:'DELETE'})) }
     $('#chartFrames').querySelectorAll('button').forEach(b => b.onclick = () => {

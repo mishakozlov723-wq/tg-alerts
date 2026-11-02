@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { processUpdateOnce } from '../cloudflare/update-once.mjs'
+import { processUpdateOnce, pruneUpdates } from '../cloudflare/update-once.mjs'
 import { createLocalStore, emptyMain } from '../cloudflare/storage.mjs'
 import { createLiveStore, LiveConflict } from '../live-store.js'
 import { newReminder, createLiveRunner } from '../live.js'
@@ -69,6 +69,30 @@ test('monitor orders concurrent checkpoints and preserves mutations during a pen
  await monitor.flush();monitor.sample('x','X','ok','first');hold=true;const pending=monitor.flush();monitor.sample('x','X','error','second');const pending2=monitor.flush();release();await Promise.all([pending,pending2])
  assert.equal(JSON.parse(data.get('tg-alerts:monitor:v1')).parts.x.detail,'second')
 })
+test('static files bypass the worker; only dynamic routes run it first',()=>{
+ const config=JSON.parse(readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8')),first=config.assets.run_worker_first
+ assert.ok(Array.isArray(first));for(const route of ['/api/*','/admin/*','/telegram/*','/health','/setup','/setup.html'])assert.ok(first.includes(route),route)
+ for(const route of first)assert.ok(!['/','/*','/index.html'].includes(route),route)
+ const headers=readFileSync(new URL('../public/_headers',import.meta.url),'utf8')
+ assert.match(headers,/^\/\*\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff$/m)
+ assert.match(headers,/^\/lightweight-charts-5\.0\.9\.js\n  Cache-Control: public, max-age=31536000, immutable$/m)
+ assert.ok(!/no-store/.test(headers))
+})
 test('Cloudflare configuration and served assets contain no Render endpoints',()=>{
  for(const file of ['cloudflare/worker.mjs','cloudflare/core.mjs'])assert.doesNotMatch(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/onrender\.com|RENDER_EXTERNAL_URL/)
+})
+test('update cleanup pages past 5000 keys and deletes at most 128 keys per call',async()=>{
+ // Fake Durable Object storage with the real list()/delete() limits and key order.
+ const data=new Map(),now=Date.parse('2026-10-30T00:00:00Z'),old=now-8*86400000;let deletes=0
+ const storage={
+  async list({prefix,limit,startAfter}){const keys=[...data.keys()].filter(k=>k.startsWith(prefix)&&(startAfter===undefined||k>startAfter)).sort().slice(0,limit);return new Map(keys.map(k=>[k,data.get(k)]))},
+  async delete(keys){if(keys.length>128)throw new Error('delete() supports up to 128 keys');deletes++;keys.forEach(k=>data.delete(k));return keys.length}
+ }
+ // 99999999 sorts after 100000000: 6000 fresh keys come first in key order.
+ for(let i=0;i<6000;i++)data.set('update:'+(100000000+i),{status:'done',at:now-1000})
+ for(let i=0;i<300;i++)data.set('update:'+(99999000+i),{status:'done',at:old})
+ data.set('lastCleanup',1)
+ assert.equal(await pruneUpdates(storage,{now}),300)
+ assert.equal(data.size,6001,'Only expired update claims are removed');assert.equal(deletes,3)
+ assert.equal(await pruneUpdates(storage,{now}),0)
 })

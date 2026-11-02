@@ -2,11 +2,13 @@ import { DurableObject } from 'cloudflare:workers'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { timingSafeEqual, createHmac } from 'node:crypto'
 import { createEngine } from './core.mjs'
-import { processUpdateOnce } from './update-once.mjs'
+import { processUpdateOnce, pruneUpdates } from './update-once.mjs'
 import { createLocalStore, emptyMain } from './storage.mjs'
 import { verifyAccessToken, ALERTS_SESSION_NOT_BEFORE } from '../shared/access-token.mjs'
 const equal=(a,b)=>{const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||''));return x.length===y.length&&timingSafeEqual(x,y)}
 const json=(status,value)=>Response.json(value,{status,headers:{'cache-control':'no-store','referrer-policy':'no-referrer','x-content-type-options':'nosniff'}})
+// Бот Access — один бот с двумя именами; его токен нельзя ставить в Alerts.
+const ACCESS_BOT_USERNAMES=new Set(['verifycapp','retocker_access_bot'])
 export function missing(env){
  const keys=['BOT_TOKEN','ACCESS_SIGNING_SECRET','TELEGRAM_WEBHOOK_SECRET','OANDA_TOKEN'].filter(k=>!env[k])
  if(env.PRICE_SOURCE!=='oanda')keys.push('PRICE_SOURCE_must_be_oanda')
@@ -93,9 +95,14 @@ export class AlertsEngine extends DurableObject{
    return json(200,{ok:true})
   }
   if(p==='/health'){
-   const absent=missing(env);if(absent.length)return json(503,{ok:false,error:'configuration_incomplete',missing:absent})
-   if(!this.local.initialized())return json(503,{ok:false,error:'storage_not_initialized',runtime:'cloudflare',storage:'sqlite',enabled:false})
-   const core=await this.core();await core.inspect()
+   // Public answer is only ok/error; details (missing settings, scheduler, feed) need x-setup-secret.
+   const full=secretOK(req,env,'x-setup-secret'),absent=missing(env)
+   if(absent.length)return json(503,{ok:false,error:'configuration_incomplete',...(full?{missing:absent}:{})})
+   if(!this.local.initialized())return json(503,{ok:false,error:'storage_not_initialized',...(full?{runtime:'cloudflare',storage:'sqlite',enabled:false}:{})})
+   const core=await this.core()
+   // Reading every reminder is not repeated for each public request: at most once a minute.
+   if(full||!(Date.now()-(this.healthCheckedAt||0)<60000)){await core.inspect();this.healthCheckedAt=Date.now()}
+   if(!full)return json(200,{ok:true})
    return json(200,{ok:true,runtime:'cloudflare',storage:'sqlite',quoteMode:'stream',displayIntervalMs:1000,enabled:!!await storage.get('enabled'),schedulerActive:!!this.window,windowOutboundRequests:this.window?.calls||0,lastSchedulerRun:this.lastSchedulerRun,feed:core.feedStatus()})
   }
   if(p.startsWith('/admin/')){
@@ -105,7 +112,7 @@ export class AlertsEngine extends DurableObject{
    const absent=missing(env);if(absent.length)return json(503,{error:'configuration_incomplete',missing:absent})
    if(!/^[A-Za-z0-9_-]{32,256}$/.test(env.TELEGRAM_WEBHOOK_SECRET))return json(503,{error:'webhook_secret_format_invalid'})
    const me=(await tg(env,'getMe',{})).result
-   if(me.username==='verifycapp')return json(409,{error:'this_is_the_access_bot_use_the_alerts_bot_token'})
+   if(ACCESS_BOT_USERNAMES.has(String(me.username||'').toLowerCase()))return json(409,{error:'this_is_the_access_bot_use_the_alerts_bot_token'})
    if(p==='/admin/inspect')return json(200,{ok:true,bot:me.username,initialized:this.local.initialized(),data:this.local.initialized()?await(await this.core()).inspect():null,enabled:!!await storage.get('enabled'),quoteMode:'stream',storage:'sqlite'})
    if(p==='/admin/export'){if(!this.local.initialized())return json(409,{error:'storage_not_initialized'});return json(200,{ok:true,snapshot:this.local.exportSnapshot()})}
    if(p==='/admin/initialize'){
@@ -170,8 +177,7 @@ export class AlertsEngine extends DurableObject{
     const faults=result.filter(r=>r.status==='rejected'&&r.reason?.name!=='AbortError'&&!r.reason?.retrySafe)
     if(faults.length&&epoch===this.epoch){failed=true;try{await this.ctx.storage.put('monitorSchedulerFailure',true)}catch{};this.invalidate()}
     if(Date.now()-(await this.ctx.storage.get('lastCleanup')||0)>3600000){
-     this.local.cleanup();const entries=await this.ctx.storage.list({prefix:'update:',limit:5000}),expired=[...entries].filter(([,v])=>Date.now()-v.at>7*86400000).map(([k])=>k)
-     if(expired.length)await this.ctx.storage.delete(expired);await this.ctx.storage.put('lastCleanup',Date.now())
+     this.local.cleanup();await pruneUpdates(this.ctx.storage);await this.ctx.storage.put('lastCleanup',Date.now())
     }
    }catch{failed=true;try{await this.ctx.storage.put('monitorSchedulerFailure',true)}catch{};this.invalidate();console.error('[alerts] stream window failed; will reconnect with backoff')}
    finally{
@@ -192,7 +198,7 @@ async function handle(req,env){
   const p=new URL(req.url).pathname
   if(p==='/setup'||p==='/setup.html')return new Response(SETUP,{headers:{'content-type':'text/html;charset=utf-8','cache-control':'no-store','referrer-policy':'no-referrer'}})
   if(p==='/health'||p.startsWith('/admin/')||p==='/telegram/webhook'||p.startsWith('/api/')){
-    if(p.startsWith('/admin/')&&!secretOK(req,env,'x-setup-secret'))return json(403,{error:'forbidden'})
+    if((p.startsWith('/admin/')||p==='/api/feed-status')&&!secretOK(req,env,'x-setup-secret'))return json(403,{error:'forbidden'})
     if(p==='/telegram/webhook'&&!secretOK(req,env,'x-telegram-bot-api-secret-token'))return json(403,{error:'forbidden'})
     if(p==='/api/access/redeem'){
       if(req.method!=='POST')return json(405,{error:'method_not_allowed'})
@@ -214,35 +220,12 @@ async function handle(req,env){
     return new Response(response.body,{status:response.status,statusText:response.statusText,headers})
   }
   if(req.method!=='GET'&&req.method!=='HEAD')return json(405,{error:'method_not_allowed'})
-  const assetRequest=new Request(req);assetRequest.headers.delete('if-none-match');assetRequest.headers.delete('if-modified-since')
-  const asset=await env.ASSETS.fetch(assetRequest),headers=new Headers(asset.headers)
-  headers.set('referrer-policy','no-referrer');headers.set('cache-control','no-store')
-  if((p==='/'||p==='/index.html')&&asset.ok&&req.method!=='HEAD'){
-    headers.delete('content-length');headers.delete('content-encoding');headers.delete('etag');headers.delete('last-modified')
-    let html=await asset.text()
-    // Authenticated configuration is loaded by bootstrap, not during rendering.
-    html=html.replace('if (shown[k] == null) continue','if (shown[k] == null || !cfg.symbols[k]) continue')
-    html=html.replace("fetch(authApi.replace(/\\/$/, '') + '/api/verify-code'", "fetch('/api/access/redeem'")
-    html=html.replace("status.textContent = r.status === 429 ? 'Too many attempts. Please wait before trying again.' : r.status >= 500 ? 'Access service unavailable. Try again.' : 'Invalid or already used code.'", "throw new Error(result.error || 'invalid_code')")
-    html=html.replace("catch { status.textContent = 'Network error or timeout. Try again; request a new code if it was already used.' }",  "catch (e) { const messages = { access_signing_secret_mismatch: 'Ошибка настройки: ACCESS_SIGNING_SECRET в Alerts не совпадает с Access. Этот код уже погашен; после исправления получите новый.', too_many_attempts: 'Слишком много попыток. Подождите 15 минут и получите новый код.', invalid_or_expired_code: 'Код истёк или уже использован. Получите новый код Alerts в Access.', invalid_code: 'Введите шестизначный код Alerts.', configuration_incomplete: 'В Alerts не заполнены обязательные настройки.', access_connection_failed: 'Нет связи между Alerts и Access. Сообщите об этой ошибке.', access_unexpected_response: 'Cloudflare вернул неожиданный ответ вместо Access. Сообщите об этой ошибке.', service_unavailable: 'Access вернул внутреннюю ошибку. Сообщите об этой ошибке.' }; status.textContent = messages[e.message] || 'Не удалось выполнить вход. Проверьте соединение и адрес приложения. Если повторяется — сообщите об ошибке.' }")
-    html=html.replace("setInterval(() => tick().catch(() => {}), 400)", "setInterval(() => {if (!document.hidden) tick().catch(() => {})}, 1000)")
-    html=html.replace("sym + ' · live'", "sym + ' · streaming'")
-    html=html.replace(/\/\/ smooth glide of displayed prices[\s\S]*?(?=const QUOTE_CACHE_KEY)/, `// Display actual snapshots only, never animated intermediate prices.
-function frame() {
-  for (const k in shown) if (!cfg.symbols[k]) delete shown[k]
-  for (const k in prices) if (cfg.symbols[k] && Number.isFinite(prices[k].price)) shown[k] = prices[k].price
-  const state = s => window.quoteState(s, prices[s])
-  $('#price').textContent = fmt(sym, shown[sym])
-  $('#psub').textContent = sym + ' · ' + state(sym)
-  document.querySelectorAll('.asset').forEach(t => { const s=t.dataset.s, stale=state(s) !== 'streaming'; t.querySelector('span').textContent = fmt(s, shown[s]) + (shown[s] != null && stale ? ' · last' : ''); t.title = state(s); t.dataset.stale = String(stale) })
-  requestAnimationFrame(frame)
-}
-
-`)
-    html=html.replace('Run <b>node server.js</b> in the project folder,<br>then open <b>http://localhost:3000</b>', 'Check /health and complete /setup.html before using Alerts. If setup is complete, retry shortly.')
-    return new Response(html,{status:asset.status,headers})
-  }
-  return new Response(asset.body,{status:asset.status,headers})
+  // Existing static files are served by the asset layer before the worker runs
+  // (run_worker_first lists only dynamic routes; headers in public/_headers).
+  // Keep the asset layer's ETag revalidation here too instead of no-store.
+  const asset=await env.ASSETS.fetch(req),headers=new Headers(asset.headers)
+  headers.set('referrer-policy','no-referrer');headers.set('x-content-type-options','nosniff')
+  return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers})
 }
 export default {
  async fetch(req,env){try{return await handle(req,env)}catch(e){return json(e.status||503,{error:e.status?e.message:'service_unavailable'})}},

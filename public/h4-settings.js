@@ -107,10 +107,12 @@
   el('h4Retry').onclick = load
   const visible = () => !document.hidden && !el('p-settings').classList.contains('hide')
   setInterval(() => { if (visible()) renderSchedule() }, 1000)
+  const SYNC_ERROR = 'Cannot sync with OANDA. Please retry.'
   setInterval(async () => {
     if (!visible() || loading || busy) return
-    try { await refreshStatus(); render() }
-    catch { status = null; error = 'Cannot sync with OANDA. Please retry.'; render() }
+    // A later successful sync clears its own error; load/save errors stay until Retry.
+    try { await refreshStatus(); if (error === SYNC_ERROR) error = ''; render() }
+    catch { status = null; error = SYNC_ERROR; render() }
   }, 30000)
   document.addEventListener('visibilitychange', () => { if (visible()) load() })
   window.H4Settings = { load }

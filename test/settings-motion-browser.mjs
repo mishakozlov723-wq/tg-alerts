@@ -8,7 +8,7 @@ const asset = name => readFileSync(new URL('../public/' + name, import.meta.url)
 const index = asset('index.html')
 const section = index.match(/<section id="p-settings"[\s\S]*?<\/section>/)[0].replace('class="hide"','class=""')
 const html = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>${index.match(/<style>([\s\S]*?)<\/style>/)[1]}</style><link rel="stylesheet" href="/alert-refinements.css"><div class="wrap">${section}<div id="alist"></div><div id="footer">After alerts</div></div><script>const H={};function recoverAccess(){};function toast(){};</script><script src="/h4-settings.js"></script><script src="/alert-motion.js"></script>`
-let prefs = { enabled: true, symbols: ['EURUSD'], lead: [15], atClose: true }, reject = false, posts = 0
+let prefs = { enabled: true, symbols: ['EURUSD'], lead: [15], atClose: true }, reject = false, posts = 0, statusFails = false
 const errors = []
 const server = http.createServer(async (req,res) => {
   const reply = (body, code=200) => { res.writeHead(code, {'content-type':'application/json'});res.end(JSON.stringify(body)) }
@@ -21,6 +21,7 @@ const server = http.createServer(async (req,res) => {
     }
     return reply(prefs)
   }
+  if (req.url === '/api/h4/status' && statusFails) return reply({error:'Cannot sync with OANDA. Please retry.'},503)
   if (req.url === '/api/h4/status') return reply({configured:true,serverTime:Date.now(),assets:{EURUSD:{status:'waiting'},XAUUSD:{status:'locked'}}})
   if(req.url==='/'){res.writeHead(200,{'content-type':'text/html'});return res.end(html)}
   const name=req.url.slice(1);if(!['alert-refinements.css','h4-settings.js','alert-motion.js'].includes(name)){res.writeHead(404);return res.end()}
@@ -97,6 +98,21 @@ try {
   assert.equal(await page.locator('[data-id="3"]').count(),0)
   assert.equal(await page.locator('#h4NextClose').evaluate(e=>getComputedStyle(e).transitionDuration),'0s')
   assert.deepEqual(errors,[])
-  console.log('PASS: At-close-only schedule fade; no save-time flash sampled every frame; pending click guard; rollback; master lock; muted entry/delete; gradual layout collapse; reduced motion; mobile width. Synthetic APIs only.')
   await context.close()
+  // A failed 30-second status sync must not leave its error and Retry button
+  // on screen after the next successful sync.
+  const syncContext=await browser.newContext({viewport:{width:390,height:1000}})
+  await syncContext.route('**/*',r=>r.request().url().startsWith(origin)?r.continue():r.abort())
+  const syncPage=await syncContext.newPage();syncPage.on('pageerror',e=>errors.push(e.message))
+  await syncPage.clock.install();await syncPage.goto(origin)
+  await syncPage.evaluate(()=>window.H4Settings.load());await syncPage.waitForFunction(()=>document.querySelector('#p-settings').dataset.ready==='true')
+  statusFails=true;await syncPage.clock.runFor(30000)
+  await syncPage.waitForFunction(()=>document.querySelector('#h4State').textContent.includes('Cannot sync'))
+  assert.equal(await syncPage.locator('#h4Retry').evaluate(e=>e.classList.contains('hide')),false)
+  statusFails=false;await syncPage.clock.runFor(30000)
+  await syncPage.waitForFunction(()=>!document.querySelector('#h4State').textContent.includes('Cannot sync'))
+  assert.equal(await syncPage.locator('#h4Retry').evaluate(e=>e.classList.contains('hide')),true)
+  await syncContext.close()
+  assert.deepEqual(errors,[])
+  console.log('PASS: At-close-only schedule fade; no save-time flash sampled every frame; pending click guard; rollback; master lock; muted entry/delete; gradual layout collapse; reduced motion; mobile width; status sync error clears after recovery. Synthetic APIs only.')
 } finally {await browser.close();await new Promise(r=>server.close(r))}

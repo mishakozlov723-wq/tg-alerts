@@ -161,3 +161,21 @@ test('the app shows a definite Telegram rejection until a later message is deliv
   assert.equal(await issue([{ ...failed, userId: other }]), null, 'Other users are not affected')
   assert.equal(await issue([{ ...failed, failedCode: undefined }]), null, 'Only definite user-side rejections are shown')
 })
+test('/reset_quotes keeps a 30-day backup and /restore_quotes merges it back', async () => {
+  const alerts = [{ id: 1, userId: uid, symbol: 'XAUUSD', dir: 'reach', level: 2000, status: 'active' }, { id: 2, userId: uid, symbol: 'EURUSD', dir: 'reach', level: 1.1, status: 'active' }]
+  const f = fixture({ alerts, owned: { [uid]: ['XAUUSD'] }, orders: { 3: { id: 3, userId: uid, symbol: 'METALS', status: 'done' } }, seq: 4 })
+  const say = text => ({ message: { from: { id: Number(admin) }, chat: { id: Number(admin), type: 'private' }, text } })
+  const last = () => f.calls.filter(c => c.method === 'sendMessage').at(-1).payload.text
+  try {
+    const engine = await createEngine(f.env)
+    await engine.update(say('/restore_quotes confirm')); assert.match(last(), /No backup found/)
+    await engine.update(say('/reset_quotes confirm')); assert.match(last(), /restore_quotes confirm/)
+    let d = await f.main(); assert.deepEqual(d.owned, {}); assert.deepEqual(d.orders, {}); assert.deepEqual(d.alerts.map(a => a.id), [2])
+    const [{ expires }] = f.db.prepare("SELECT expires FROM alerts_kv WHERE k='tg-alerts:reset-backup:v1'").all()
+    assert.ok(Math.abs(expires - Date.now() - 30 * 86400000) < 60000, 'Backup expires after 30 days')
+    await engine.update(say('/restore_quotes confirm')); assert.match(last(), /purchases for 1 users, 1 orders, 1 alerts/)
+    d = await f.main(); assert.deepEqual(d.owned, { [uid]: ['XAUUSD'] }); assert.equal(d.orders[3].status, 'done'); assert.deepEqual(d.alerts.map(a => a.id), [1, 2])
+    await engine.update(say('/restore_quotes confirm')); assert.match(last(), /purchases for 0 users, 0 orders, 0 alerts/)
+    assert.deepEqual((await f.main()).alerts.map(a => a.id), [1, 2], 'Restoring twice does not duplicate')
+  } finally { f.db.close() }
+})

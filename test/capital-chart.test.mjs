@@ -74,3 +74,11 @@ test('DXY refuses ambiguous instrument search instead of guessing',async()=>{
  await assert.rejects(createCandles(f.env,f.store).get(new URLSearchParams('symbol=DXY')),/capital_dxy_unavailable/)
  assert.equal(f.requests.filter(u=>u.pathname.includes('/prices/')).length,0)
 })
+test('a storage failure while restoring a Capital chart is not cached until restart',async()=>{
+ const f=fixture();let fail=true
+ const store=async command=>{if(fail&&command[0]==='GET')throw Object.assign(new Error('disk'),{storageFailure:true});return f.store(command)}
+ const source=createCandles(f.env,store),params=()=>new URLSearchParams({symbol:'DXY',timeframe:'H1'})
+ await assert.rejects(source.get(params()),/disk/)
+ fail=false
+ const r=await source.get(params());assert.equal(r.source,'Capital');assert.equal(r.candles.length,300)
+})

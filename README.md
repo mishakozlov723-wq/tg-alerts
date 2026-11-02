@@ -12,9 +12,9 @@
 ## Legacy Node: локальный запуск с реальными ценами и новостями
 1. Установи Node.js (LTS) с nodejs.org
 2. В папке проекта: `npm install`
-3. Скопируй `.env.example` в `.env` (в нём уже PRICE_SOURCE=dukascopy)
+3. Создай `.env` с нужными переменными, например `PRICE_SOURCE=dukascopy` (файла-примера в репозитории нет)
 4. Проверь источники: `npm run check` — покажет цены EURUSD/GBPUSD/DXY и ближайшие красные новости
-5. Запуск: `node server.js`, открой http://localhost:3000
+5. Запуск: `npm run start:legacy`, открой http://localhost:3000. Только с **тестовым** ботом: с боевым `BOT_TOKEN` сервер снимет вебхук и заберёт бота у Cloudflare. Обычный `npm start` старый сервер не запускает.
 
 ## Котировки OANDA (как на твоём графике)
 1. Демо-счёт OANDA (fxTrade Practice) -> личный кабинет -> Manage API Access -> Generate token
@@ -68,6 +68,8 @@ https://developer.oanda.com/rest-live-v20/instrument-df/
 https://developer.oanda.com/rest-live-v20/pricing-df/
 
 ### Persistence and operational requirements
+> Redis/Upstash, `DB_FILE` and Render notes in this and the Live section describe only the legacy Node server. Production runs on Cloudflare: data lives in the Durable Object's SQLite, see [CLOUDFLARE.md](CLOUDFLARE.md).
+
 - Telegram `/start` is still required before the bot can message a user.
 - H4 preferences use a separate Redis hash `tg-alerts:{h4}:settings:v1`, so a legacy
   news-settings save cannot overwrite them. Delivery claims use per-event `SET NX`
@@ -123,7 +125,7 @@ Pause/resume, edit and delete are available. No premium quote purchase is needed
   Failed; timeout/crash -> Delivery not confirmed. Unknown sends are not blindly
   retried: Telegram cannot guarantee exactly-once sendMessage. Errors do not expose
   private reminder text in admin logs. Messages are plain text, not HTML.
-- **Render sleep still applies.** The Mini App may be closed, but the server must
+- **Legacy Node only: Render sleep applies.** The Mini App may be closed, but the server must
   remain awake to deliver on time. No paid hosting, keep-alive service or billing
   changes are introduced here. This is not a replacement for a guaranteed alarm.
 - Tests include real Redis Lua (when redis-server is installed), competing runners,

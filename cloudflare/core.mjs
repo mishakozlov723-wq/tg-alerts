@@ -5,7 +5,7 @@ import { createUserAdmin } from './admin-users.mjs'
 // broker ingestion is serialized, background network waits are independent.
 import crypto from 'node:crypto'
 import { verifyAccessToken } from '../shared/access-token.mjs'
-import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner } from '../h4.js'
+import { H4_ASSETS, normalizeH4Settings, createOandaH4, createH4Runner, createH4StatusBoard } from '../h4.js'
 import { createH4Store } from '../h4-store.js'
 import { createLiveStore, LiveConflict } from '../live-store.js'
 import { newReminder, editReminder, liveIdValid, liveView, createLiveRunner } from '../live.js'
@@ -165,8 +165,8 @@ async function notify(userId, text) {
 
 // ---------- OANDA H4 reminders (independent from quote alerts/news) ----------
 const h4Raw = createOandaH4({ env, fetcher: fetch })
-let h4States = {}
-const h4Source = { configured: h4Raw.configured, async get(symbols) { const states = await h4Raw.get(symbols); h4States = states; return states } }
+const h4Board = createH4StatusBoard()
+const h4Source = { configured: h4Raw.configured, async get(symbols) { return h4Board.record(await h4Raw.get(symbols)) } }
 let h4Store = null, h4StoreJob = null, h4StoreRetry = 0
 async function getH4Store() {
   if (h4Store) return h4Store
@@ -454,9 +454,10 @@ async function refreshDiagnostics() {
   monitor.sample('delivery', 'Доставка Telegram', !BOT_TOKEN ? 'error' : overdue.length || uncertain.length || recentFailure ? 'warn' : telegramHealth.success ? 'ok' : 'unknown',
     `В очереди: ${pending.length}, старше 2 мин: ${overdue.length}; failed/unknown/attempting за 24 ч: ${uncertain.length}. Последний подтверждённый sendMessage: ${telegramHealth.success ? new Date(telegramHealth.success).toISOString() : 'пока нет'}; последняя ошибка: ${telegramHealth.code || 'нет в этом запуске'}. Неизвестные доставки не переотправляются вслепую.`)
   const h4Enabled = Object.values(h4Store?.all() || {}).filter(s => s.enabled)
-  const h4Bad = Object.values(h4States).some(s => ['unavailable','unconfigured'].includes(s.status))
+  const h4States = h4Board.current()
+  const h4Bad = Object.values(h4States).some(s => ['unavailable','unconfigured'].includes(s))
   monitor.sample('h4', 'H4-напоминания', !h4Store ? 'error' : !h4Enabled.length ? 'idle' : !h4Source.configured || taskErrors.h4 || h4Bad ? 'error' : Object.keys(h4States).length ? 'ok' : 'unknown',
-    `Активных настроек: ${h4Enabled.length}; OANDA: ${h4Source.configured ? 'настроен' : 'не настроен'}; ${Object.entries(h4States).map(([s,v]) => `${s}: ${v.status}`).join(', ') || 'запросы свечей ещё не требовались'}. Ошибка прохода: ${taskErrors.h4 ? 'да' : 'нет'}.`)
+    `Активных настроек: ${h4Enabled.length}; OANDA: ${h4Source.configured ? 'настроен' : 'не настроен'}; ${Object.entries(h4States).map(([s,v]) => `${s}: ${v}`).join(', ') || 'запросы свечей ещё не требовались'}. Ошибка прохода: ${taskErrors.h4 ? 'да' : 'нет'}.`)
   const reminders = liveStore?.all() || [], outcomes = reminders.flatMap(r => r.deliveries).filter(d => ['failed','unknown','missed'].includes(d.status) && now - (d.at || 0) < 86400000)
   const invalidLive = liveStore?.diagnostics().invalidRecords || 0
   monitor.sample('live', 'Live-напоминания', !liveStore || taskErrors.live ? 'error' : invalidLive || outcomes.length ? 'warn' : reminders.some(r => r.enabled) ? 'ok' : 'idle',

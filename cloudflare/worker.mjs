@@ -93,9 +93,14 @@ export class AlertsEngine extends DurableObject{
    return json(200,{ok:true})
   }
   if(p==='/health'){
-   const absent=missing(env);if(absent.length)return json(503,{ok:false,error:'configuration_incomplete',missing:absent})
-   if(!this.local.initialized())return json(503,{ok:false,error:'storage_not_initialized',runtime:'cloudflare',storage:'sqlite',enabled:false})
-   const core=await this.core();await core.inspect()
+   // Public answer is only ok/error; details (missing settings, scheduler, feed) need x-setup-secret.
+   const full=secretOK(req,env,'x-setup-secret'),absent=missing(env)
+   if(absent.length)return json(503,{ok:false,error:'configuration_incomplete',...(full?{missing:absent}:{})})
+   if(!this.local.initialized())return json(503,{ok:false,error:'storage_not_initialized',...(full?{runtime:'cloudflare',storage:'sqlite',enabled:false}:{})})
+   const core=await this.core()
+   // Reading every reminder is not repeated for each public request: at most once a minute.
+   if(full||!(Date.now()-(this.healthCheckedAt||0)<60000)){await core.inspect();this.healthCheckedAt=Date.now()}
+   if(!full)return json(200,{ok:true})
    return json(200,{ok:true,runtime:'cloudflare',storage:'sqlite',quoteMode:'stream',displayIntervalMs:1000,enabled:!!await storage.get('enabled'),schedulerActive:!!this.window,windowOutboundRequests:this.window?.calls||0,lastSchedulerRun:this.lastSchedulerRun,feed:core.feedStatus()})
   }
   if(p.startsWith('/admin/')){
@@ -191,7 +196,7 @@ async function handle(req,env){
   const p=new URL(req.url).pathname
   if(p==='/setup'||p==='/setup.html')return new Response(SETUP,{headers:{'content-type':'text/html;charset=utf-8','cache-control':'no-store','referrer-policy':'no-referrer'}})
   if(p==='/health'||p.startsWith('/admin/')||p==='/telegram/webhook'||p.startsWith('/api/')){
-    if(p.startsWith('/admin/')&&!secretOK(req,env,'x-setup-secret'))return json(403,{error:'forbidden'})
+    if((p.startsWith('/admin/')||p==='/api/feed-status')&&!secretOK(req,env,'x-setup-secret'))return json(403,{error:'forbidden'})
     if(p==='/telegram/webhook'&&!secretOK(req,env,'x-telegram-bot-api-secret-token'))return json(403,{error:'forbidden'})
     if(p==='/api/access/redeem'){
       if(req.method!=='POST')return json(405,{error:'method_not_allowed'})

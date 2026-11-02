@@ -253,12 +253,15 @@ function getUserId(req) {
   if (REQUIRE_ACCESS) return null
   const init = req.headers['x-init-data']
   if (init && BOT_TOKEN) {
+    // Constant-time signature check and a fresh auth_date (24 h, 1 min clock skew).
     const p = new URLSearchParams(init)
-    const hash = p.get('hash'); p.delete('hash')
+    const hash = p.get('hash') || ''; p.delete('hash')
     const check = [...p.entries()].map(([k, v]) => `${k}=${v}`).sort().join('\n')
     const secret = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest()
-    const calc = crypto.createHmac('sha256', secret).update(check).digest('hex')
-    if (calc === hash) { try { return String(JSON.parse(p.get('user')).id) } catch {} }
+    const calc = crypto.createHmac('sha256', secret).update(check).digest()
+    const given = /^[a-f0-9]{64}$/i.test(hash) ? Buffer.from(hash, 'hex') : null
+    const age = Date.now() - Number(p.get('auth_date')) * 1000
+    if (given && crypto.timingSafeEqual(calc, given) && age >= -60000 && age <= 86400000) { try { return String(JSON.parse(p.get('user')).id) } catch {} }
     return null
   }
   // local mock mode only (no BOT_TOKEN and nothing configured): never trust a client-supplied id in production

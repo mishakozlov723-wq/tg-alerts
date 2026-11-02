@@ -407,10 +407,31 @@ async function grant(uid, s) {
   await save()
 }
 
+// The whole database is one stored value (about 2 MB at most) rewritten on every
+// save, so records that are never read again are pruned: news reminders of past
+// events and payment requests abandoned before "paid". Purchases, approved or
+// declined orders and alerts are kept.
+const NEWS_KEEP_MS = 7 * 86400000, ORDER_KEEP_MS = 30 * 86400000, DB_WARN_BYTES = 1.5 * 1048576
+let nextPrune = 0
+async function pruneDb(now = Date.now()) {
+  if (now < nextPrune) return 0
+  nextPrune = now + 3600000
+  let removed = 0
+  for (const key of Object.keys(db.sentNews)) {
+    // user|country|title|ISO event date|lead: a past event can never be due again.
+    const at = key.split('|').at(-2)
+    if (/^\d{4}-\d{2}-\d{2}T/.test(at) && now - Date.parse(at) > NEWS_KEEP_MS) { delete db.sentNews[key]; removed++ }
+  }
+  for (const [id, o] of Object.entries(db.orders)) if (o.status === 'new' && Number.isFinite(o.ts) && now - o.ts > ORDER_KEEP_MS) { delete db.orders[id]; removed++ }
+  if (removed) await save()
+  return removed
+}
+
 async function refreshDiagnostics() {
   const now = Date.now(), warm = now - engineBornAt < 30000
-  await redis(['GET', 'tg-alerts-db']) // Exercise the real storage, not just in-memory objects.
-  monitor.sample('storage', 'SQLite', 'ok', 'Основная база доступна; записи подтверждаются при реальных изменениях.')
+  const stored = await redis(['GET', 'tg-alerts-db']) // Exercise the real storage, not just in-memory objects.
+  const size = stored ? new TextEncoder().encode(stored).length : 0, big = size > DB_WARN_BYTES
+  monitor.sample('storage', 'SQLite', big ? 'warn' : 'ok', `Основная база доступна; записи подтверждаются при реальных изменениях. Размер базы: ${(size / 1048576).toFixed(2)} МБ из ~2 МБ.${big ? ' База близка к пределу одного значения: нужно удалить старые данные (например, сработавшие алерты).' : ''}`)
   const scheduler = env.RUNTIME_STATUS?.()
   const late = lastHousekeeping && now - lastHousekeeping > 90000
   monitor.sample('scheduler', 'Фоновые задачи', scheduler?.enabled === false || late || monitor.snapshot().schedulerFailed ? 'error' : lastHousekeeping ? 'ok' : 'unknown',
@@ -835,6 +856,7 @@ return {
     // Bounded display-cache checkpoint; never write on every market tick.
     await quoteFeed.checkpoint(redis)
     await flushEvents()
+    await pruneDb()
     taskErrors.live = false; taskErrors.h4 = false; taskErrors.news = false
     // A failing subsystem must not prevent checks of the others.
     for (const [key, fn] of [['live', checkLive], ['h4', checkH4], ['news', checkNews]]) {

@@ -214,10 +214,12 @@ async function handle(req,env){
     return new Response(response.body,{status:response.status,statusText:response.statusText,headers})
   }
   if(req.method!=='GET'&&req.method!=='HEAD')return json(405,{error:'method_not_allowed'})
-  const assetRequest=new Request(req);assetRequest.headers.delete('if-none-match');assetRequest.headers.delete('if-modified-since')
-  const asset=await env.ASSETS.fetch(assetRequest),headers=new Headers(asset.headers)
-  headers.set('referrer-policy','no-referrer');headers.set('cache-control','no-store')
-  return new Response(asset.body,{status:asset.status,headers})
+  // Existing static files are served by the asset layer before the worker runs
+  // (run_worker_first lists only dynamic routes; headers in public/_headers).
+  // Keep the asset layer's ETag revalidation here too instead of no-store.
+  const asset=await env.ASSETS.fetch(req),headers=new Headers(asset.headers)
+  headers.set('referrer-policy','no-referrer');headers.set('x-content-type-options','nosniff')
+  return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers})
 }
 export default {
  async fetch(req,env){try{return await handle(req,env)}catch(e){return json(e.status||503,{error:e.status?e.message:'service_unavailable'})}},

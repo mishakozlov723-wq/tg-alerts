@@ -69,6 +69,15 @@ test('monitor orders concurrent checkpoints and preserves mutations during a pen
  await monitor.flush();monitor.sample('x','X','ok','first');hold=true;const pending=monitor.flush();monitor.sample('x','X','error','second');const pending2=monitor.flush();release();await Promise.all([pending,pending2])
  assert.equal(JSON.parse(data.get('tg-alerts:monitor:v1')).parts.x.detail,'second')
 })
+test('static files bypass the worker; only dynamic routes run it first',()=>{
+ const config=JSON.parse(readFileSync(new URL('../wrangler.jsonc',import.meta.url),'utf8')),first=config.assets.run_worker_first
+ assert.ok(Array.isArray(first));for(const route of ['/api/*','/admin/*','/telegram/*','/health','/setup','/setup.html'])assert.ok(first.includes(route),route)
+ for(const route of first)assert.ok(!['/','/*','/index.html'].includes(route),route)
+ const headers=readFileSync(new URL('../public/_headers',import.meta.url),'utf8')
+ assert.match(headers,/^\/\*\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff$/m)
+ assert.match(headers,/^\/lightweight-charts-5\.0\.9\.js\n  Cache-Control: public, max-age=31536000, immutable$/m)
+ assert.ok(!/no-store/.test(headers))
+})
 test('Cloudflare configuration and served assets contain no Render endpoints',()=>{
  for(const file of ['cloudflare/worker.mjs','cloudflare/core.mjs'])assert.doesNotMatch(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/onrender\.com|RENDER_EXTERNAL_URL/)
 })

@@ -1,0 +1,11 @@
+# Static files are served by Cloudflare's asset layer without invoking the worker.
+# Default caching is "public, max-age=0, must-revalidate" with an ETag: the browser
+# revalidates every file, so a deploy is visible immediately while unchanged files
+# cost a 304 instead of a full download.
+/*
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+
+# Versioned file name: the content never changes.
+/lightweight-charts-5.0.9.js
+  Cache-Control: public, max-age=31536000, immutable

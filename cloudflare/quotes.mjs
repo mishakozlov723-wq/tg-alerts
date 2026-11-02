@@ -74,8 +74,9 @@ export function createQuoteFeed(env){
  }
  async function refresh(onTick,dispatch=fn=>fn()){
   if(Date.now()<nextRefresh)return
-  // Reconcile even a healthy heartbeat-only stream. One request per 20s at most.
-  nextRefresh=Date.now()+20000
+  // Reconcile even a healthy heartbeat-only stream. One request per 20s at most,
+  // and one per 2 min while the FX session is closed (nothing can change then).
+  nextRefresh=Date.now()+(marketOpen()?20000:120000)
   try{await pull(onTick,dispatch);errors.oanda=null;if(!connected)source='polling_fallback'}catch(e){if(e.storageFailure||e.retrySafe)throw e;errors.oanda='OANDA_feed_unavailable'}
  }
  async function stream(onTick,signal,dispatch=fn=>fn()){
@@ -108,24 +109,41 @@ export function createQuoteFeed(env){
    }finally{connected=false;clearTimeout(timer);signal.removeEventListener('abort',stop);if(cancelRead)controller.signal.removeEventListener('abort',cancelRead);controller.abort();if(reader)await reader.cancel().catch(()=>{})}
   }
  }
-  async function pollCapital(onTick, dispatch=fn=>fn()) {
+  // Capital REST has no stream: every poll costs one outbound request per symbol,
+  // and all requests of a stream window share one small budget with the OANDA
+  // stream and Telegram delivery. Poll a symbol on every cycle only while it is
+  // in demand (an active alert or an open screen) and its market trades; otherwise
+  // rarely. Without a demand set (probe, direct callers) every symbol is polled.
+  const CAPITAL_SCHEDULE={hotOpenMs:0,hotClosedMs:30000,coldOpenMs:60000,coldClosedMs:300000}
+  const capitalPolledAt={}
+  const capitalClosed=s=>['CLOSED','OFFLINE','SUSPENDED'].includes(capitalDiagnostics.quotes[s]?.marketStatus)
+  function capitalDue(s,demand,now){
+    if(!demand||!capitalPolledAt[s])return true
+    const hot=demand.has(s),closed=capitalClosed(s)
+    return now-capitalPolledAt[s]>=(hot?closed?CAPITAL_SCHEDULE.hotClosedMs:CAPITAL_SCHEDULE.hotOpenMs:closed?CAPITAL_SCHEDULE.coldClosedMs:CAPITAL_SCHEDULE.coldOpenMs)
+  }
+  async function pollCapital(onTick, dispatch=fn=>fn(), demand) {
     if(!capOn || Date.now()<capNext)return
-    capitalDiagnostics.lastAttemptAt=Date.now();capitalDiagnostics.httpStatus=null;capitalDiagnostics.errorCode=null
+    const now=Date.now(),wanted=Object.keys(SYMBOLS).filter(s=>(s==='DXY'||SYMBOLS[s].capital)&&capitalDue(s,demand,now))
+    if(!wanted.length)return
+    capitalDiagnostics.lastAttemptAt=now;capitalDiagnostics.httpStatus=null;capitalDiagnostics.errorCode=null
     try {
       const client=capitalClient(env)
       // DXY discovery is independent; missing DXY must not disable metals/GER40.
-      try{SYMBOLS.DXY.capital=await client.dxyEpic()}catch(e){if(e.retrySafe||e.storageFailure)throw e;unavailable(['DXY'],['DXY'])}
-      const items=Object.entries(SYMBOLS).filter(([,c])=>c.capital)
+      if(wanted.includes('DXY'))try{SYMBOLS.DXY.capital=await client.dxyEpic()}catch(e){if(e.retrySafe||e.storageFailure)throw e;capitalPolledAt.DXY=Date.now();unavailable(['DXY'],['DXY'])}
+      const items=Object.entries(SYMBOLS).filter(([s,c])=>c.capital&&wanted.includes(s))
       // The epics bulk response has local updateTime only. Search responses include
       // updateTimeUTC; use that authoritative timestamp, never receipt time or a
       // guessed timezone. Match the exact epic so similarly named markets cannot leak in.
       const seen=[]
       capitalDiagnostics.responseFormat='markets';capitalDiagnostics.receivedCount=0
-      capitalDiagnostics.quotes={}
+      // Per-symbol diagnostics persist between polls; symbols polled less often keep their last result.
+      capitalDiagnostics.quotes||={}
       for(const [s,c] of items) {
         const searchTerm=s==='DXY'?'Dollar Index':s==='GER40'?(env.CAPITAL_SEARCH_GER40||(c.capital==='DE40'?'Germany 40':c.capital)):c.capital
         capitalDiagnostics.stage='markets';capitalDiagnostics.httpStatus=null
         const d=await client.get('/markets?searchTerm='+encodeURIComponent(searchTerm),capitalDiagnostics)
+        capitalPolledAt[s]=Date.now()
         if(!Array.isArray(d.markets)){capitalDiagnostics.errorCode='unexpected_markets_format';throw new Error('Capital markets unavailable')}
         capitalDiagnostics.stage='process_markets'
         const snapshot=d.markets.find(m=>m.epic===c.capital)
@@ -155,7 +173,7 @@ export function createQuoteFeed(env){
       }
       unavailable(items.map(([s])=>s),items.filter(([s])=>!seen.includes(s)).map(([s])=>s))
       capFails=0;errors.capital=null
-      capitalDiagnostics.stage=Object.values(capitalDiagnostics.quotes).some(q=>q.stored)?'ok':'no_quotes_accepted';capitalDiagnostics.errorCode=null;capitalDiagnostics.lastSuccessAt=Date.now()
+      capitalDiagnostics.stage=items.some(([s])=>capitalDiagnostics.quotes[s]?.stored)?'ok':'no_quotes_accepted';capitalDiagnostics.errorCode=null;capitalDiagnostics.lastSuccessAt=Date.now()
     } catch(e) {
       // Rotating a Cloudflare request-budget window is not a broker failure.
       // Resume immediately in the next invocation instead of adding a 20s backoff.
@@ -167,6 +185,6 @@ export function createQuoteFeed(env){
   async probe(){await discover();const d=await get(`/v3/accounts/${encodeURIComponent(account)}/pricing?instruments=${encodeURIComponent(PAIRS.join(','))}`);if(!Array.isArray(d.prices)||!['EUR_USD','GBP_USD'].every(s=>d.prices.some(p=>p.instrument===s)))throw new Error('broker_prices_unavailable');await pollCapital(null);if(capOn&&errors.capital)throw new Error('Capital_feed_unavailable');return {oanda:true,capital:capOn}},
   tradeable:s=>trade[s]===true,
   fresh,
-  status:()=>({mode:'stream',source,connected,lastMessage,displayIntervalMs:1000,capitalIntervalMs:1500,pricing:{oandaEnvironment:env.OANDA_ENV||'practice',oandaSide:env.OANDA_SIDE||'bid',capitalSide:env.CAPITAL_SIDE||'mid',quotes:Object.fromEntries(['EURUSD','GBPUSD'].filter(s=>prices[s]).map(s=>[s,{receivedAgeMs:Date.now()-prices[s].observedAt,sourceAgeMs:Date.now()-prices[s].dataTs,spreadPips:Number(prices[s].spreadPips?.toFixed(3)),tradeable:prices[s].tradeable}]))},errors:{...errors},capitalDiagnostics:{...capitalDiagnostics,quoteTimingVersion:1,quotes:Object.fromEntries(Object.entries(capitalDiagnostics.quotes||{}).map(([s,q])=>[s,{...q,sourceAgeMs:Number.isFinite(q.sourceTime)?Date.now()-q.sourceTime:null,receivedAgeMs:Number.isFinite(q.receivedAt)?Date.now()-q.receivedAt:null}])),nextRetryAt:capNext,consecutiveFailures:capFails},tradeable:{...trade}}),
+  status:()=>({mode:'stream',source,connected,lastMessage,displayIntervalMs:1000,capitalIntervalMs:1500,capitalSchedule:{...CAPITAL_SCHEDULE,hotOpenMs:1500},pricing:{oandaEnvironment:env.OANDA_ENV||'practice',oandaSide:env.OANDA_SIDE||'bid',capitalSide:env.CAPITAL_SIDE||'mid',quotes:Object.fromEntries(['EURUSD','GBPUSD'].filter(s=>prices[s]).map(s=>[s,{receivedAgeMs:Date.now()-prices[s].observedAt,sourceAgeMs:Date.now()-prices[s].dataTs,spreadPips:Number(prices[s].spreadPips?.toFixed(3)),tradeable:prices[s].tradeable}]))},errors:{...errors},capitalDiagnostics:{...capitalDiagnostics,quoteTimingVersion:1,quotes:Object.fromEntries(Object.entries(capitalDiagnostics.quotes||{}).map(([s,q])=>[s,{...q,sourceAgeMs:Number.isFinite(q.sourceTime)?Date.now()-q.sourceTime:null,receivedAgeMs:Number.isFinite(q.receivedAt)?Date.now()-q.receivedAt:null}])),nextRetryAt:capNext,consecutiveFailures:capFails},tradeable:{...trade}}),
  }
 }

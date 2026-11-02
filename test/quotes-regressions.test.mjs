@@ -21,7 +21,7 @@ function setup(){
  return {feed,FETCH,get calls(){return calls},set fail(v){fail=v},set closed(v){closed=v},set old(v){old=v}}
 }
 test('cold REST seed includes all six DXY constituents; reconciliation is bounded and recovers outages',async()=>{
- const clock=Date.now;let now=clock();Date.now=()=>now
+ const clock=Date.now;let now=Date.parse('2026-10-21T12:00:00Z');Date.now=()=>now // FX session open
  try{
   const f=setup(),ticks=[];await f.feed.refresh((...t)=>ticks.push(t))
   assert.ok(f.feed.prices.EURUSD);assert.ok(f.feed.prices.GBPUSD);assert.ok(f.feed.prices.DXY);assert.ok(f.feed.fresh('DXY'))
@@ -32,7 +32,7 @@ test('cold REST seed includes all six DXY constituents; reconciliation is bounde
  }finally{Date.now=clock}
 })
 test('heartbeat-only stream stays connected while REST reconciliation refreshes the full basket',async()=>{
- const clock=Date.now;let now=clock();Date.now=()=>now
+ const clock=Date.now;let now=Date.parse('2026-10-21T12:00:00Z');Date.now=()=>now // FX session open
  const f=setup(),ac=new AbortController();let controller
  const FETCH=async(url,init)=>url.includes('/pricing/stream?')?new Response(new ReadableStream({start(c){controller=c;c.enqueue(new TextEncoder().encode('{"type":"HEARTBEAT"}\n'))},cancel(){}})):f.FETCH(url,init)
  const feed=createQuoteFeed({...env,FETCH})

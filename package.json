@@ -6,7 +6,7 @@
     "start": "node server.js",
     "check": "node check.js",
     "test": "node --test test/*.test.js",
-    "test:cloudflare": "wrangler deploy --dry-run --outdir .cf-test && node --test test/cloudflare.test.mjs test/delivery-regressions.test.mjs test/quotes-regressions.test.mjs test/monitor.test.mjs test/chart.test.mjs test/reach.test.mjs test/feed-watch.test.mjs test/remaining-quotes.test.mjs test/capital-chart.test.mjs test/audit-fixes.test.mjs test/cloudflare-hardening.test.mjs",
+    "test:cloudflare": "wrangler deploy --dry-run --outdir .cf-test && node --test test/cloudflare.test.mjs test/delivery-regressions.test.mjs test/quotes-regressions.test.mjs test/monitor.test.mjs test/chart.test.mjs test/reach.test.mjs test/feed-watch.test.mjs test/remaining-quotes.test.mjs test/capital-chart.test.mjs test/audit-fixes.test.mjs test/cloudflare-hardening.test.mjs test/capital-demand.test.mjs",
     "deploy:cloudflare": "wrangler deploy",
     "test:browser": "node test/refinements-browser.mjs && node test/settings-motion-browser.mjs && node test/audit-browser.mjs"
   },

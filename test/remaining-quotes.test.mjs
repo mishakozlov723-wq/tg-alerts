@@ -22,7 +22,7 @@ test('Capital uses broker UTC time, rejects missing/future/old/closed quotes and
  } finally {Date.now=clock}
 })
 test('OANDA reconnects and explicit reconciliation share the REST throttle, including failures', async () => {
- const clock=Date.now;let now=clock(),pricing=0,streams=0,fail=false
+ const clock=Date.now;let now=Date.parse('2026-10-21T12:00:00Z'),pricing=0,streams=0,fail=false // FX session open
  Date.now=()=>now
  const ac=new AbortController()
  const feed=createQuoteFeed({OANDA_TOKEN:'fixture',OANDA_ACCOUNT:'fixture',FETCH:async url=>{

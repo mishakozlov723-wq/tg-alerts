@@ -52,7 +52,7 @@ export function capitalClient(env) {
     if (!epicJob) epicJob = (async () => {
       const data = await get('/markets?searchTerm=Dollar%20Index')
       // Refuse ambiguous or unrelated dollar indices rather than guessing a price source.
-      const matches = (data.markets || []).filter(m => /^(?:US |US )?Dollar Index$/i.test(m.instrumentName || '') && typeof m.epic === 'string')
+      const matches = (data.markets || []).filter(m => /^(?:US )?Dollar Index$/i.test(m.instrumentName || '') && typeof m.epic === 'string')
       if (matches.length !== 1) throw new Error('capital_dxy_unavailable')
       epic = matches[0].epic; return epic
     })().catch(e => { retryAt = Date.now() + 60000; throw e }).finally(() => { epicJob = null })

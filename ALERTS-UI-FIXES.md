@@ -23,6 +23,6 @@ node --test test/access-gate.test.js test/chart-ui.test.js test/notes-ui.test.js
 CHROMIUM_PATH=/path/to/chromium node test/refinements-browser.mjs
 ```
 
-The browser fixture runs the real chart library and actual Cloudflare HTML transforms, but uses synthetic APIs, clipboard values and identities. It covers desktop and touch-emulated mobile layouts, not physical iOS/Android Telegram or production brokers. The rest of the server/network test suite was not run as part of this isolated UI verification.
+The browser fixture runs the real chart library and `index.html` exactly as served (no runtime HTML transforms), but uses synthetic APIs, clipboard values and identities. It covers desktop and touch-emulated mobile layouts, not physical iOS/Android Telegram or production brokers. The rest of the server/network test suite was not run as part of this isolated UI verification.
 
 Changes are prepared on a separate branch based on the current `main`, which includes newer chart work missing from `cloudflare-migration`. No merge, production branch switch, deployment, webhook registration, secret update, data migration or billing change is performed by this patch. Deploy Access first, then Alerts from the reviewed current production code; do not accidentally deploy the older migration branch.

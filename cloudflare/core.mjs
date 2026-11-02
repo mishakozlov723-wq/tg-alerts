@@ -99,6 +99,20 @@ const nice = (s) => (BUNDLES[s] ? BUNDLES[s].label : SYMBOLS[s].label && SYMBOLS
 const ownsQuote = (uid, s) => Boolean(uid) && (db.owned[uid] || []).includes(s)
 const allowedSyms = (uid) => Object.keys(SYMBOLS).filter((s) => !isPremium(s) || ownsQuote(uid, s))
 const symbolsFor = (uid) => Object.fromEntries(allowedSyms(uid).map((s) => [s, { pip: SYMBOLS[s].pip, digits: SYMBOLS[s].digits }]))
+// Capital quotes are polled, not streamed. A symbol is "in demand" while it can
+// trigger an alert or someone has the app (prices or chart) open; only those are
+// polled every cycle, the rest rarely (schedule in quotes.mjs).
+const CAPITAL_ON = Boolean(env.CAPITAL_API_KEY && env.CAPITAL_IDENTIFIER && env.CAPITAL_PASSWORD)
+const VIEW_TTL_MS = 30000
+const viewedAt = {}
+const markViewed = (syms) => { const now = Date.now(); for (const s of syms) if (SYMBOLS[s]) viewedAt[s] = now }
+function quoteDemand() {
+  const now = Date.now(), hot = new Set()
+  for (const a of db.alerts) if (a.status === 'active' && (!isPremium(a.symbol) || ownsQuote(a.userId, a.symbol))) hot.add(a.symbol)
+  for (const [s, at] of Object.entries(viewedAt)) if (now - at < VIEW_TTL_MS) hot.add(s)
+  return hot
+}
+const capitalPolled = (s) => CAPITAL_ON && (s === 'DXY' || Boolean(SYMBOLS[s]?.capital))
 
 // ---------- notifications ----------
 function trimEvents() {
@@ -401,9 +415,13 @@ async function refreshDiagnostics() {
   const late = lastHousekeeping && now - lastHousekeeping > 90000
   monitor.sample('scheduler', 'Фоновые задачи', scheduler?.enabled === false || late || monitor.snapshot().schedulerFailed ? 'error' : lastHousekeeping ? 'ok' : 'unknown',
     `Последний полный проход: ${lastHousekeeping ? new Date(lastHousekeeping).toISOString() : 'ещё не завершён'}; окно: ${scheduler ? scheduler.active ? 'активно' : 'между запусками' : 'нет runtime-метрики'}; исходящих запросов: ${scheduler?.calls ?? '—'}.`)
-  const needed = new Set(['EURUSD', 'GBPUSD', 'DXY', ...Object.values(db.owned).flat(), ...db.alerts.filter(a => a.status === 'active').map(a => a.symbol)])
-  const stale = [...needed].filter(s => !quoteFeed.fresh(s)), feed = quoteFeed.status(), open = quoteFeed.marketOpen()
-  const lines = [...needed].map(s => { const p = prices[s]; return `${s}: ${!p ? 'нет цены' : `${quoteFeed.fresh(s) ? 'свежая' : 'последняя'}, возраст источника ${Math.max(0, Math.round((now - p.dataTs) / 1000))} с`}` })
+  const listed = new Set(['EURUSD', 'GBPUSD', 'DXY', ...Object.values(db.owned).flat(), ...db.alerts.filter(a => a.status === 'active').map(a => a.symbol)])
+  const feed = quoteFeed.status(), open = quoteFeed.marketOpen(), demand = quoteDemand()
+  // Polled Capital symbols must be fresh only while in demand and tradeable at the broker.
+  const brokerClosed = s => capitalPolled(s) && ['CLOSED','OFFLINE','SUSPENDED'].includes(feed.capitalDiagnostics?.quotes?.[s]?.marketStatus)
+  const rare = s => capitalPolled(s) && !demand.has(s)
+  const stale = [...listed].filter(s => !rare(s) && !brokerClosed(s) && !quoteFeed.fresh(s))
+  const lines = [...listed].map(s => { const p = prices[s]; return `${s}: ${!p ? 'нет цены' : `${quoteFeed.fresh(s) ? 'свежая' : 'последняя'}, возраст источника ${Math.max(0, Math.round((now - p.dataTs) / 1000))} с`}${brokerClosed(s) ? ' (рынок закрыт у брокера)' : rare(s) ? ' (опрашивается реже: нет активных алертов и открытого приложения)' : ''}` })
   monitor.sample('quotes', 'Котировки', !open ? 'idle' : stale.length ? warm ? 'unknown' : 'error' : feed.connected ? 'ok' : 'warn',
     `${open ? 'Рыночная сессия ожидается' : 'Вне общей Forex-сессии (расписания CFD могут отличаться)'}; источник: ${feed.source}.\n${lines.join('\n')}${feed.errors.capital ? '\nCapital: источник недоступен.' : ''}`)
   const news = newsSource.status()
@@ -606,6 +624,7 @@ async function handleHttp(req, res) {
     const uid = getUserId(req)
     if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' })
     const ok = new Set(allowedSyms(uid))
+    markViewed(ok)
     return json(res, 200, Object.fromEntries(Object.entries(prices).filter(([k]) => ok.has(k)).map(([k,v]) => [k,{...v,stale:!quoteFeed.fresh(k)}])))
   }
   if (p === '/api/news') { const uid = getUserId(req); if (REQUIRE_ACCESS && !uid) return json(res, 401, { error: 'access_required' }); return json(res, 200, await getNews()) }
@@ -617,6 +636,7 @@ async function handleHttp(req, res) {
   if (p === '/api/chart/candles') {
     if (req.method !== 'GET') return json(res, 405, { error: 'method_not_allowed' })
     if (!allowedSyms(uid).includes(url.searchParams.get('symbol') || 'GBPUSD')) return json(res, 403, { error: 'quote_access_required' })
+    markViewed([url.searchParams.get('symbol') || 'GBPUSD'])
     return json(res, 200, await chartCandles.get(url.searchParams))
   }
 
@@ -806,7 +826,7 @@ return {
   async probe() { return quoteFeed.probe() },
   feedStatus() { return {...quoteFeed.status(), notificationPolicy: { staleWarningDelayMs: FEED_WARNING_DELAY_MS }} },
   async stream(signal, dispatch) { return quoteFeed.stream(onTick, signal, dispatch) },
-  async capital(dispatch) { return quoteFeed.capital(onTick, dispatch) },
+  async capital(dispatch) { return quoteFeed.capital(onTick, dispatch, quoteDemand()) },
   flushEvents,
   async refreshQuotes(dispatch) { return quoteFeed.refresh(onTick, dispatch) },
   async housekeeping() {

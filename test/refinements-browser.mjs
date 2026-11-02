@@ -190,8 +190,9 @@ try {
   // Mobile: clipboard denial, native/manual paste, reduced motion and no horizontal overflow.
   const mobile = await browser.newContext({ viewport:{width:390,height:844},isMobile:true,hasTouch:true })
   await mobile.route('**/*',route=>route.request().url().startsWith(origin)?route.continue():route.abort())
-  await mobile.addInitScript(()=>{window.Telegram={WebApp:{platform:'ios'}};Object.defineProperty(navigator,'clipboard',{value:{readText:async()=>{throw new Error('denied')}}})})
+  await mobile.addInitScript(()=>{window.tgCalls=[];window.Telegram={WebApp:{platform:'ios',initData:'',ready(){window.tgCalls.push('ready')},expand(){window.tgCalls.push('expand')}}};Object.defineProperty(navigator,'clipboard',{value:{readText:async()=>{throw new Error('denied')}}})})
   const phone = await mobile.newPage();phone.on('pageerror',e=>errors.push(e.message));await phone.goto(origin)
+  assert.deepEqual(await phone.evaluate(()=>window.tgCalls),['ready','expand'],'Inside Telegram the app is shown and expanded without initData')
   await phone.waitForFunction(()=>document.querySelector('#accessGate').classList.contains('is-visible'));await phone.locator('#splash').waitFor({state:'detached'})
   await phone.locator('#accessAction').click();await phone.waitForTimeout(100)
   assert.match(await phone.locator('#accessStatus').textContent(),/Clipboard unavailable/)

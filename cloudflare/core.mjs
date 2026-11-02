@@ -33,7 +33,9 @@ const ACCESS_SIGNING_SECRET = env.ACCESS_SIGNING_SECRET || ''
 const AUTH_API_URL = env.AUTH_API_URL || 'https://retocker-access.retocker.workers.dev'
 const REQUIRE_ACCESS = env.REQUIRE_ACCESS === 'true' || Boolean(ACCESS_SIGNING_SECRET)
 const MOCK = (env.PRICE_SOURCE || 'mock') === 'mock'
-const ADMIN_CHAT_ID = String(env.ADMIN_CHAT_ID || '1011596614')
+// One admin for payments, admin commands and monitoring: the numeric ADMIN_CHAT_ID
+// (set in wrangler.jsonc). No built-in fallback ID; without it admin features are off.
+const ADMIN_CHAT_ID = /^\d+$/.test(String(env.ADMIN_CHAT_ID || '')) ? String(env.ADMIN_CHAT_ID) : ''
 const PREMIUM_PRICE = Number(env.PREMIUM_PRICE_RUB || 350)
 const PAY_DETAILS = env.PAY_DETAILS || ''
 
@@ -57,10 +59,9 @@ const save = async () => {
   catch (cause) { if (cause.name === 'AbortError') throw cause; const e = new Error('durable_storage_unavailable'); e.storageFailure = true; throw e }
 }
 // The monitoring recipient is deliberately explicit; legacy payment fallback is not authorization.
-const monitorAdmin = /^\d+$/.test(String(env.ADMIN_CHAT_ID || '')) ? String(env.ADMIN_CHAT_ID) : ''
 const monitor = await createMonitor({ store: redis, send: text => {
-  if (!monitorAdmin || !BOT_TOKEN) throw new Error('monitor_recipient_unconfigured')
-  return tg('sendMessage', { chat_id: monitorAdmin, text, reply_markup: statusKeyboard() }, 10000)
+  if (!ADMIN_CHAT_ID || !BOT_TOKEN) throw new Error('monitor_recipient_unconfigured')
+  return tg('sendMessage', { chat_id: ADMIN_CHAT_ID, text, reply_markup: statusKeyboard() }, 10000)
 } })
 const taskErrors = { h4: false, live: false, news: false }
 let lastHousekeeping = monitor.snapshot().housekeepingAt || 0, accessNext = 0
@@ -496,7 +497,7 @@ async function showStatus(section = 'summary') {
   return { text: monitor.render(section), reply_markup: statusKeyboard() }
 }
 
-const userAdmin = createUserAdmin({ db, symbols: SYMBOLS, save, tg, adminId: monitorAdmin, extraIds: async () => {
+const userAdmin = createUserAdmin({ db, symbols: SYMBOLS, save, tg, adminId: ADMIN_CHAT_ID, extraIds: async () => {
   const h4 = await getH4Store(), live = await getLiveStore()
   return [...Object.keys(h4?.all() || {}), ...(live?.all() || []).map(r => r.userId)]
 } })
@@ -509,7 +510,7 @@ async function handleCallback(q) {
   const edit = (text, markup) => (chat ? tg('editMessageText', { chat_id: chat, message_id: mid, text, reply_markup: markup || { inline_keyboard: [] } }) : null)
   let m
   if ((m = data.match(/^status:(summary|all|quotes|news|delivery|h4|live|scheduler|access|logs)$/))) {
-    if (!monitorAdmin || uid !== monitorAdmin || String(chat) !== monitorAdmin || q.message?.chat.type !== 'private') return ans('Admin only')
+    if (!ADMIN_CHAT_ID || uid !== ADMIN_CHAT_ID || String(chat) !== ADMIN_CHAT_ID || q.message?.chat.type !== 'private') return ans('Admin only')
     await ans()
     // Send a fresh report: avoids Telegram's message-not-modified errors on repeated clicks.
     return tg('sendMessage', { chat_id: chat, ...await showStatus(m[1]) })
@@ -545,6 +546,7 @@ async function handleCallback(q) {
       return ans(event?.delivery === 'pending' ? 'Queued. Waiting for confirmation' : 'Already sent, please wait')
     }
     if (o.status !== 'new') return ans('This request is closed')
+    if (!ADMIN_CHAT_ID) return ans('Payments are unavailable right now')
     o.status = 'paid'; o.paidAt = Date.now()
     const event = enqueue(ADMIN_CHAT_ID, `💰 Payment request #${o.id}\n${who(o)}\n${nice(o.symbol)} · ${priceOf(o.symbol)} ₽`, {
       orderId: o.id,
@@ -599,13 +601,13 @@ async function handleUpdate(u) {
   if (!m || !m.chat || m.chat.type !== 'private' || !m.text) return
   if (await userAdmin.command(m)) return
   const uid = String(m.from.id), txt = m.text.trim()
-  if (/^\/emoji_test(?:@\w+)?$/i.test(txt) && monitorAdmin && uid === monitorAdmin && String(m.chat.id) === monitorAdmin) {
+  if (/^\/emoji_test(?:@\w+)?$/i.test(txt) && ADMIN_CHAT_ID && uid === ADMIN_CHAT_ID && String(m.chat.id) === ADMIN_CHAT_ID) {
     return alertIcons.test(m.chat.id)
   }
   const statusCommand = txt.match(/^\/status(?:@\w+)?(?:\s+(all|quotes|news|delivery|h4|live|scheduler|access|logs))?$/i)
   if (statusCommand) {
-    if (!monitorAdmin || uid !== monitorAdmin || String(m.chat.id) !== monitorAdmin) return
-    return tg('sendMessage', { chat_id: monitorAdmin, ...await showStatus((statusCommand[1] || 'summary').toLowerCase()) })
+    if (!ADMIN_CHAT_ID || uid !== ADMIN_CHAT_ID || String(m.chat.id) !== ADMIN_CHAT_ID) return
+    return tg('sendMessage', { chat_id: ADMIN_CHAT_ID, ...await showStatus((statusCommand[1] || 'summary').toLowerCase()) })
   }
   if (uid === ADMIN_CHAT_ID) {
     if (/^\/reset_quotes(@\w+)?(\s+confirm)?$/i.test(txt)) {
@@ -849,7 +851,7 @@ return {
     if (monitor.snapshot().parts.requests) { monitor.sample('requests', 'Обработчик запросов', 'ok', 'Telegram update обработан успешно.'); await monitor.flush() }
   },
   async watchdog() {
-    if (!monitorAdmin || env.MONITOR_ALERTS === 'false') return
+    if (!ADMIN_CHAT_ID || env.MONITOR_ALERTS === 'false') return
     const state = monitor.snapshot(), last = state.housekeepingAt || state.startedAt
     if (state.schedulerFailed || Date.now() - last > 120000) {
       monitor.sample('scheduler', 'Фоновые задачи', 'error', 'Recovery cron: успешного фонового прохода нет более 2 минут либо зафиксирован сбой. Проверяется восстановление.')
@@ -857,7 +859,7 @@ return {
     }
   },
   async reportFailure(component = 'scheduler') {
-    if (!monitorAdmin || env.MONITOR_ALERTS === 'false') return
+    if (!ADMIN_CHAT_ID || env.MONITOR_ALERTS === 'false') return
     if (component === 'scheduler') monitor.progress(0)
     monitor.sample(component, component === 'scheduler' ? 'Фоновые задачи' : 'Обработчик запросов', 'error', 'Внутренняя ошибка обработки. Выполняется восстановление; payload и секреты не включены.')
     await monitor.notify()
@@ -883,7 +885,7 @@ return {
     }
     lastHousekeeping = Date.now()
     monitor.progress(lastHousekeeping)
-    if (monitorAdmin && env.MONITOR_ALERTS !== 'false') { await refreshDiagnostics(); await monitor.notify() }
+    if (ADMIN_CHAT_ID && env.MONITOR_ALERTS !== 'false') { await refreshDiagnostics(); await monitor.notify() }
   },
   async inspect() { const h4 = await getH4Store(), live = await getLiveStore(); if (!h4 || !live) throw new Error('reminder_storage_unavailable'); return { alerts: db.alerts.length, activeAlerts: db.alerts.filter(a=>a.status==='active').length, purchases: Object.keys(db.owned).length, h4Users: Object.keys(h4.all()).length, liveReminders: live.all().length } },
 }

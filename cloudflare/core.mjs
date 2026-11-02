@@ -330,7 +330,12 @@ async function checkNews() {
 // ---------- auth: signed access token or Telegram initData ----------
 function getUserId(req) {
   const access = verifyAccessToken(req.headers['x-access-token'], 'alerts', ACCESS_SIGNING_SECRET)
-  if (access && /^\d+$/.test(String(access.sub)) && Number.isFinite(access.exp) && access.exp > Date.now()) return String(access.sub)
+  if (access && /^\d+$/.test(String(access.sub)) && Number.isFinite(access.exp) && access.exp > Date.now()) {
+    const uid = String(access.sub)
+    // Chat-created alerts are allowed only for users who already passed Access.
+    if (!db.appUsers[uid]) { db.appUsers[uid] = Date.now(); save().catch(() => {}) }
+    return uid
+  }
   if (REQUIRE_ACCESS) return null
   const init = req.headers['x-init-data']
   if (init && BOT_TOKEN) {
@@ -354,7 +359,7 @@ function getUserId(req) {
 // ---------- Telegram bot: persistent keyboard under the input field ----------
 const TG_API = env.TG_API || 'https://api.telegram.org'
 const WEBAPP_URL = env.WEBAPP_URL || 'https://tg-alerts.retocker.workers.dev'
-const WELCOME = `Price alerts for EURUSD and GBPUSD.\n\nUp to ${BASE_ALERTS} alerts for free, ${PRO_ALERTS} with any paid bundle. Streaming OANDA price alerts and red news from Forex Factory, all in one place.\n\nWant Gold, Silver, GER40 or DXY? Tap Add quote.`
+const WELCOME = `Price alerts for EURUSD and GBPUSD.\n\nUp to ${BASE_ALERTS} alerts for free, ${PRO_ALERTS} with any paid bundle. Streaming OANDA price alerts and red news from Forex Factory, all in one place.\n\nWant Gold, Silver, GER40 or DXY? Tap Add quote.\n\nQuick alert: just send a quote and a price, for example EURUSD 1.0850`
 const MY_ALERTS_TEXT = 'My alerts'
 const ADD_TEXT = 'Add quote'
 const MYQ_TEXT = 'My quotes'
@@ -409,13 +414,14 @@ async function adminNotify(text, key = text, minGapMs = 0) {
   lastAdmin.set(key, now)
   try { await tg('sendMessage', { chat_id: ADMIN_CHAT_ID, text: `[tg-alerts] ${text}` }, 10000) } catch {}
 }
-const dirSym = (d) => (d === 'reach' ? '◇' : d === 'above' ? '▲' : '▼')
+const dirSym = (d) => (d === 'reach' ? '' : d === 'above' ? '▲' : '▼')
+const alertLabel = (a) => [a.symbol, dirSym(a.dir), a.level].filter(Boolean).join(' ')
 function alertsView(uid) {
   const list = db.alerts.filter((a) => a.userId === uid && a.status === 'active')
   const text = list.length
-    ? `Your active alerts (${list.length}/${limitFor(uid)}):\n\n` + list.map((a, i) => `${i + 1}. ${a.symbol} ${dirSym(a.dir)} ${a.level}${a.note ? ' · ' + a.note : ''}`).join('\n')
+    ? `Your active alerts (${list.length}/${limitFor(uid)}):\n\n` + list.map((a, i) => `${i + 1}. ${alertLabel(a)}${a.note ? ' · ' + a.note : ''}`).join('\n')
     : 'No active alerts yet.'
-  const rows = list.map((a) => [{ text: `✕ ${a.symbol} ${dirSym(a.dir)} ${a.level}`, callback_data: `del:${a.id}` }])
+  const rows = list.map((a) => [{ text: `✕ ${alertLabel(a)}`, callback_data: `del:${a.id}` }])
   rows.push([{ text: 'Open Alerts', web_app: { url: WEBAPP_URL } }])
   return { text, reply_markup: { inline_keyboard: rows } }
 }
@@ -685,7 +691,32 @@ async function handleUpdate(u) {
     await tg('sendMessage', { chat_id: m.chat.id, text: `Your quotes:\n\n${list}` })
     return
   }
+  const quick = txt.match(/^([a-z][a-z0-9]{1,9})\s+(\d+(?:[.,]\d+)?)(?:\s+(.+))?$/is)
+  if (quick) {
+    const symbol = chatSymbol(quick[1])
+    if (symbol) {
+      await tg('sendMessage', { chat_id: m.chat.id, text: await chatAlert(uid, symbol, Number(quick[2].replace(',', '.')), quick[3]) })
+      return
+    }
+  }
   await tg('sendMessage', { chat_id: m.chat.id, text: WELCOME, reply_markup: KEYBOARD })
+}
+// Symbol by code or label, case-insensitive: EURUSD, eurusd, gold, silver, dxy.
+function chatSymbol(word) {
+  const w = word.toUpperCase()
+  return Object.keys(SYMBOLS).find((s) => s === w || String(SYMBOLS[s].label || '').toUpperCase() === w) || null
+}
+async function chatAlert(uid, symbol, level, note) {
+  const known = db.appUsers[uid] || db.alerts.some((a) => a.userId === uid) || db.settings[uid] || (db.owned[uid] || []).length
+  if (REQUIRE_ACCESS && !known) return 'Open Alerts once and sign in, then you can create alerts here by text.'
+  if (!allowedSyms(uid).includes(symbol)) return `${nice(symbol)} is a paid quote. Tap Add quote to get it.`
+  if (!Number.isFinite(level) || level <= 0) return 'Send it like this: EURUSD 1.0850'
+  const max = limitFor(uid)
+  if (db.alerts.filter((x) => x.userId === uid && x.status === 'active').length >= max) return `Alert limit reached (${max}). Delete an alert first.`
+  const a = { id: db.seq++, userId: uid, symbol, dir: 'reach', level, note: cleanNote(note), status: 'active', createdAt: Date.now() }
+  if (quoteFeed.fresh(symbol)) a.referencePrice = prices[symbol].price
+  db.alerts.push(a); await save()
+  return `✅ Alert set: ${alertLabel(a)}${a.note ? ' · ' + a.note : ''}`
 }
 // ---------- HTTP ----------
 const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)) }
@@ -877,6 +908,7 @@ function flushEvents() {
 }
 // Persist notification state with the same atomic record as its outbox.
 db.feedWatch ||= {}
+db.appUsers ||= {}
 
 return {
   async http(request) {

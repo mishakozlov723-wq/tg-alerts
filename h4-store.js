@@ -4,7 +4,7 @@ import { defaultH4Settings } from './h4.js'
 
 // Separate from legacy news preferences so old clients cannot erase H4 settings.
 // Redis HSET updates one user's preferences atomically; SET NX deduplicates across
-// overlapping Render deployments. No in-memory fallback if Redis is unavailable.
+// overlapping deployments. No in-memory fallback if Redis is unavailable.
 export async function createH4Store({ redis = null, file, clock = Date.now }) {
   const hash = 'tg-alerts:{h4}:settings:v1'
   let state = { settings: {}, sent: {} }
@@ -59,7 +59,7 @@ export async function createH4Store({ redis = null, file, clock = Date.now }) {
         const digest = crypto.createHash('sha256').update(key).digest('hex')
         const marker = 'tg-alerts:{h4}:sent:' + digest
         if (context) {
-          // A previous Render instance cannot send with preferences changed on
+          // A previous instance cannot send with preferences changed on
           // the new instance: compare preferences and claim in ONE Redis operation.
           const script = `if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then return nil end; return redis.call('SET', KEYS[2], '1', 'NX', 'EX', 172800)`
           return (await redis(['EVAL', script, 2, hash, marker, context.uid, JSON.stringify(context.settings)])) === 'OK'

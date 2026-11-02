@@ -7,6 +7,8 @@ import { createLocalStore, emptyMain } from './storage.mjs'
 import { verifyAccessToken, ALERTS_SESSION_NOT_BEFORE } from '../shared/access-token.mjs'
 const equal=(a,b)=>{const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||''));return x.length===y.length&&timingSafeEqual(x,y)}
 const json=(status,value)=>Response.json(value,{status,headers:{'cache-control':'no-store','referrer-policy':'no-referrer','x-content-type-options':'nosniff'}})
+// Бот Access — один бот с двумя именами; его токен нельзя ставить в Alerts.
+const ACCESS_BOT_USERNAMES=new Set(['verifycapp','retocker_access_bot'])
 export function missing(env){
  const keys=['BOT_TOKEN','ACCESS_SIGNING_SECRET','TELEGRAM_WEBHOOK_SECRET','OANDA_TOKEN'].filter(k=>!env[k])
  if(env.PRICE_SOURCE!=='oanda')keys.push('PRICE_SOURCE_must_be_oanda')
@@ -110,7 +112,7 @@ export class AlertsEngine extends DurableObject{
    const absent=missing(env);if(absent.length)return json(503,{error:'configuration_incomplete',missing:absent})
    if(!/^[A-Za-z0-9_-]{32,256}$/.test(env.TELEGRAM_WEBHOOK_SECRET))return json(503,{error:'webhook_secret_format_invalid'})
    const me=(await tg(env,'getMe',{})).result
-   if(me.username==='verifycapp')return json(409,{error:'this_is_the_access_bot_use_the_alerts_bot_token'})
+   if(ACCESS_BOT_USERNAMES.has(String(me.username||'').toLowerCase()))return json(409,{error:'this_is_the_access_bot_use_the_alerts_bot_token'})
    if(p==='/admin/inspect')return json(200,{ok:true,bot:me.username,initialized:this.local.initialized(),data:this.local.initialized()?await(await this.core()).inspect():null,enabled:!!await storage.get('enabled'),quoteMode:'stream',storage:'sqlite'})
    if(p==='/admin/export'){if(!this.local.initialized())return json(409,{error:'storage_not_initialized'});return json(200,{ok:true,snapshot:this.local.exportSnapshot()})}
    if(p==='/admin/initialize'){

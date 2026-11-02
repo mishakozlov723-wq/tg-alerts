@@ -80,7 +80,7 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
  })
  test('admin secrets protect initialization; Access bot is rejected',async()=>{
   assert.equal((await request('/admin/initialize',{startEmpty:true})).status,403)
-  botName='verifycapp';assert.equal((await admin('inspect')).status,409);botName='artificial_alerts_bot'
+  for(const name of ['verifycapp','retocker_access_bot','Retocker_Access_Bot']){botName=name;assert.equal((await admin('inspect')).status,409)}botName='artificial_alerts_bot'
   const r=await admin('inspect');assert.equal(r.status,200);assert.equal(r.data.initialized,false)
  })
  test('explicit import validates atomically and cannot overwrite initialized state',async()=>{

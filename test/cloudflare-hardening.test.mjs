@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { processUpdateOnce } from '../cloudflare/update-once.mjs'
+import { processUpdateOnce, pruneUpdates } from '../cloudflare/update-once.mjs'
 import { createLocalStore, emptyMain } from '../cloudflare/storage.mjs'
 import { createLiveStore, LiveConflict } from '../live-store.js'
 import { newReminder, createLiveRunner } from '../live.js'
@@ -80,4 +80,19 @@ test('static files bypass the worker; only dynamic routes run it first',()=>{
 })
 test('Cloudflare configuration and served assets contain no Render endpoints',()=>{
  for(const file of ['cloudflare/worker.mjs','cloudflare/core.mjs'])assert.doesNotMatch(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/onrender\.com|RENDER_EXTERNAL_URL/)
+})
+test('update cleanup pages past 5000 keys and deletes at most 128 keys per call',async()=>{
+ // Fake Durable Object storage with the real list()/delete() limits and key order.
+ const data=new Map(),now=Date.parse('2026-10-30T00:00:00Z'),old=now-8*86400000;let deletes=0
+ const storage={
+  async list({prefix,limit,startAfter}){const keys=[...data.keys()].filter(k=>k.startsWith(prefix)&&(startAfter===undefined||k>startAfter)).sort().slice(0,limit);return new Map(keys.map(k=>[k,data.get(k)]))},
+  async delete(keys){if(keys.length>128)throw new Error('delete() supports up to 128 keys');deletes++;keys.forEach(k=>data.delete(k));return keys.length}
+ }
+ // 99999999 sorts after 100000000: 6000 fresh keys come first in key order.
+ for(let i=0;i<6000;i++)data.set('update:'+(100000000+i),{status:'done',at:now-1000})
+ for(let i=0;i<300;i++)data.set('update:'+(99999000+i),{status:'done',at:old})
+ data.set('lastCleanup',1)
+ assert.equal(await pruneUpdates(storage,{now}),300)
+ assert.equal(data.size,6001,'Only expired update claims are removed');assert.equal(deletes,3)
+ assert.equal(await pruneUpdates(storage,{now}),0)
 })

@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { timingSafeEqual, createHmac } from 'node:crypto'
 import { createEngine } from './core.mjs'
-import { processUpdateOnce } from './update-once.mjs'
+import { processUpdateOnce, pruneUpdates } from './update-once.mjs'
 import { createLocalStore, emptyMain } from './storage.mjs'
 import { verifyAccessToken, ALERTS_SESSION_NOT_BEFORE } from '../shared/access-token.mjs'
 const equal=(a,b)=>{const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||''));return x.length===y.length&&timingSafeEqual(x,y)}
@@ -170,8 +170,7 @@ export class AlertsEngine extends DurableObject{
     const faults=result.filter(r=>r.status==='rejected'&&r.reason?.name!=='AbortError'&&!r.reason?.retrySafe)
     if(faults.length&&epoch===this.epoch){failed=true;try{await this.ctx.storage.put('monitorSchedulerFailure',true)}catch{};this.invalidate()}
     if(Date.now()-(await this.ctx.storage.get('lastCleanup')||0)>3600000){
-     this.local.cleanup();const entries=await this.ctx.storage.list({prefix:'update:',limit:5000}),expired=[...entries].filter(([,v])=>Date.now()-v.at>7*86400000).map(([k])=>k)
-     if(expired.length)await this.ctx.storage.delete(expired);await this.ctx.storage.put('lastCleanup',Date.now())
+     this.local.cleanup();await pruneUpdates(this.ctx.storage);await this.ctx.storage.put('lastCleanup',Date.now())
     }
    }catch{failed=true;try{await this.ctx.storage.put('monitorSchedulerFailure',true)}catch{};this.invalidate();console.error('[alerts] stream window failed; will reconnect with backoff')}
    finally{

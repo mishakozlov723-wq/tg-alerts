@@ -10,7 +10,7 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('content-type', 'application/json')
     return res.end(JSON.stringify({ authRequired: true, authApi: '/fixture-access' }))
   }
-  if (url.pathname === '/api/access/check' || url.pathname === '/fixture-access/api/verify-code') {
+  if (url.pathname === '/api/access/check' || url.pathname === '/api/access/redeem') {
     res.setHeader('content-type', 'application/json')
     return res.end(JSON.stringify({ ok: false, error: 'invalid_code' }))
   }

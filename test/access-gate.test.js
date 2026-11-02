@@ -42,10 +42,10 @@ function boot({ legacy = null, saved = null, valid = false, authApi = '/local-ac
       const responses = {
         '/api/config': { authRequired: true, authApi, symbols: { EURUSD: { digits: 5, pip: .0001 } } },
         '/api/access/check': { ok: valid }, '/api/prices': pricesResponse, '/api/events?since=0': eventsResponse, '/api/settings': {},
-        '/local-access/api/verify-code': redeemedToken ? { token: redeemedToken } : { error: 'invalid_code' },
+        '/api/access/redeem': redeemedToken ? { token: redeemedToken } : { error: 'invalid_or_expired_code' },
       }
       assert.ok(url in responses, 'Unexpected request: ' + url)
-      if (url === '/local-access/api/verify-code' && redeemedToken) expirePrices = false
+      if (url === '/api/access/redeem' && redeemedToken) expirePrices = false
       return { ok: !(expirePrices && url === '/api/prices'), status: expirePrices && url === '/api/prices' ? 401 : 200, json: async () => responses[url] }
     },
   })
@@ -108,7 +108,7 @@ for (const saved of [null, 'expired-test-token']) {
     assert.equal(app.storage.has('retocker.access.alerts.v3'), false)
     app.element('#accessCode').value = '123456'
     await app.element('#accessForm').onsubmit({ preventDefault() {} })
-    assert.equal(app.element('#accessStatus').textContent, 'Invalid or already used code.')
+    assert.equal(app.element('#accessStatus').textContent, 'Код истёк или уже использован. Получите новый код Alerts в Access.')
     assert.equal(app.element('#accessGate').classList.contains('hide'), false)
     for (const timer of app.timers) timer.fn()
     assert.deepEqual(app.errors, [])
@@ -126,6 +126,20 @@ test('successful code entry resumes bootstrap without restoring the splash', asy
   assert.equal(app.storage.get('retocker.access.alerts.v3'), 'new-test-token')
   assert.ok(app.requests.includes('/api/prices'))
   assert.deepEqual(app.errors, [])
+})
+
+test('rate-limited code entry shows the remaining wait from the server, not a fixed 15 minutes', async () => {
+  for (const [retryAfter, expected] of [[125, 'Подождите 3 мин'], [undefined, 'Подождите 15 мин']]) {
+    const app = boot()
+    await settle()
+    app.setFetch(async url => url === '/api/access/redeem'
+      ? { ok: false, status: 429, json: async () => ({ error: 'too_many_attempts', retryAfter }) }
+      : { ok: true, status: 200, json: async () => url === '/api/config' ? { authRequired: true, authApi: '/local-access', symbols: { EURUSD: { digits: 5, pip: .0001 } } } : {} })
+    app.element('#accessCode').value = '123456'
+    await app.element('#accessForm').onsubmit({ preventDefault() {} })
+    await settle()
+    assert.ok(app.element('#accessStatus').textContent.includes(expected), app.element('#accessStatus').textContent)
+  }
 })
 
 test('valid saved session retains the normal intro and skips code entry', async () => {
@@ -146,7 +160,7 @@ test('expired session during polling opens one gate and resumes without replayin
   await app.element('#accessForm').onsubmit({ preventDefault() {} }); await settle()
   assert.equal(app.element('#accessGate').classList.contains('hide'), true)
   assert.equal(app.storage.get('retocker.access.alerts.v3'), 'replacement-token')
-  assert.equal(app.requests.filter(u => u === '/local-access/api/verify-code').length, 1)
+  assert.equal(app.requests.filter(u => u === '/api/access/redeem').length, 1)
   assert.deepEqual(app.errors, [])
 })
 
@@ -159,7 +173,7 @@ test('recovery refreshes the active list and reconciles revoked selected symbol 
     if(o.method&&o.method!=='GET')mutations++
     if(url==='/api/config')return {ok:true,status:200,json:async()=>({authRequired:true,authApi:'/local-access',symbols:{EURUSD:{digits:5,pip:.0001}}})}
     if(url==='/api/alerts'){listReads++;return {ok:true,status:200,json:async()=>[]}}
-    return {ok:true,status:200,json:async()=>url.includes('verify-code')?{token:'replacement-token'}:{}}
+    return {ok:true,status:200,json:async()=>url === '/api/access/redeem'?{token:'replacement-token'}:{}}
   })
   vm.runInContext('recoverAccess()',app.context);await settle()
   app.element('#accessCode').value='123456';await app.element('#accessForm').onsubmit({preventDefault(){}});await settle()
@@ -170,7 +184,7 @@ test('recovery refreshes the active list and reconciles revoked selected symbol 
 test('failed configuration refresh reopens login visibly and permits a later successful recovery',async()=>{
   const app=boot({saved:'valid-test-token',valid:true});await settle()
   let configFails=true
-  app.setFetch(async url=>({ok:!(url==='/api/config'&&configFails),status:url==='/api/config'&&configFails?503:200,json:async()=>url==='/api/config'?(configFails?{error:'unavailable'}:{authRequired:true,authApi:'/local-access',symbols:{EURUSD:{digits:5,pip:.0001}}}):url.includes('verify-code')?{token:'replacement-token'}:{}}))
+  app.setFetch(async url=>({ok:!(url==='/api/config'&&configFails),status:url==='/api/config'&&configFails?503:200,json:async()=>url==='/api/config'?(configFails?{error:'unavailable'}:{authRequired:true,authApi:'/local-access',symbols:{EURUSD:{digits:5,pip:.0001}}}):url === '/api/access/redeem'?{token:'replacement-token'}:{}}))
   vm.runInContext('recoverAccess()',app.context);await settle()
   app.element('#accessCode').value='123456';await app.element('#accessForm').onsubmit({preventDefault(){}});await settle()
   assert.equal(app.element('#accessGate').classList.contains('hide'),false)
@@ -224,7 +238,7 @@ test('successful redemption keeps the gate up until protected bootstrap has rend
   let releaseConfig
   const delayedConfig = new Promise(resolve => { releaseConfig = resolve })
   app.setFetch(async url => ({ ok: true, status: 200, json: async () => {
-    if (url.includes('verify-code')) return { token: 'new-test-token' }
+    if (url === '/api/access/redeem') return { token: 'new-test-token' }
     if (url === '/api/config') return delayedConfig
     if (url === '/api/prices') return {}
     if (url.startsWith('/api/events')) return []

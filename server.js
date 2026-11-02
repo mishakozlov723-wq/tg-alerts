@@ -472,11 +472,25 @@ const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'applic
 const body = (req) => new Promise((ok) => { let d = ''; req.on('data', (c) => (d += c)); req.on('end', () => { try { ok(JSON.parse(d || '{}')) } catch { ok({}) } }) })
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' }
 
-// Small on-the-fly fixes for the page: reload the quote list after sign-in and ignore quotes the page does not know yet.
+// Small on-the-fly fix for the page: reload the quote list after sign-in.
 function patchIndex(html) {
   return html
     .replace('renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)', () => "cfg = await api('/api/config'); renderTiles(); renderPrice(); renderChips(); requestAnimationFrame(frame)")
-    .replace('if (shown[k] == null) continue', () => 'if (shown[k] == null || !cfg.symbols[k]) continue')
+}
+// The page redeems Access codes through its own origin, like the Cloudflare worker.
+async function redeemAccessCode(req, res) {
+  if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' })
+  if (!AUTH_API_URL || !ACCESS_SIGNING_SECRET) return json(res, 503, { error: 'configuration_incomplete' })
+  const b = await body(req)
+  if (!/^\d{6}$/.test(String(b.code || ''))) return json(res, 400, { error: 'invalid_code' })
+  const at = String(Date.now()), client = crypto.createHmac('sha256', ACCESS_SIGNING_SECRET).update('client-ip:' + (req.socket.remoteAddress || 'unknown')).digest('hex')
+  const signature = crypto.createHmac('sha256', ACCESS_SIGNING_SECRET).update(`alerts-client:${at}:${client}`).digest('hex')
+  let r, j
+  try { r = await fetch(new URL('/api/verify-code', AUTH_API_URL), { method: 'POST', headers: { 'content-type': 'application/json', 'x-access-client': client, 'x-access-client-time': at, 'x-access-client-signature': signature }, body: JSON.stringify({ project: 'alerts', code: b.code }), redirect: 'manual', signal: AbortSignal.timeout(10000) }) }
+  catch { return json(res, 502, { error: 'access_connection_failed' }) }
+  try { j = await r.json() } catch { return json(res, 502, { error: 'access_unexpected_response' }) }
+  if (j.token && !verifyAccessToken(j.token, 'alerts', ACCESS_SIGNING_SECRET)) return json(res, 503, { error: 'access_signing_secret_mismatch' })
+  return json(res, r.status, j)
 }
 
 const server = http.createServer(async (req, res) => {
@@ -491,6 +505,7 @@ const server = http.createServer(async (req, res) => {
     return res.end(fs.readFileSync(f))
   }
 
+  if (p === '/api/access/redeem') return redeemAccessCode(req, res)
   if (p === '/api/config') return json(res, 200, { authRequired: REQUIRE_ACCESS, authApi: AUTH_API_URL, mock: MOCK, symbols: symbolsFor(getUserId(req)) })
   if (p === '/api/prices') {
     const uid = getUserId(req)

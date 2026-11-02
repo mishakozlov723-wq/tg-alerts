@@ -35,7 +35,8 @@ const AUTH_API_URL = process.env.AUTH_API_URL || ''
 const REQUIRE_ACCESS = process.env.REQUIRE_ACCESS === 'true' || Boolean(ACCESS_SIGNING_SECRET)
 const MOCK = (process.env.PRICE_SOURCE || 'mock') === 'mock'
 const DB_FILE = process.env.DB_FILE || path.join(__dir, 'data.json')
-const ADMIN_CHAT_ID = String(process.env.ADMIN_CHAT_ID || '1011596614')
+// Numeric ADMIN_CHAT_ID only; no built-in fallback ID.
+const ADMIN_CHAT_ID = /^\d+$/.test(String(process.env.ADMIN_CHAT_ID || '')) ? String(process.env.ADMIN_CHAT_ID) : ''
 const PREMIUM_PRICE = Number(process.env.PREMIUM_PRICE_RUB || 350)
 const PAY_DETAILS = process.env.PAY_DETAILS || ''
 

@@ -82,6 +82,10 @@ test('status command and detail buttons are founder-only, no implicit admin fall
     assert.match(f.calls.at(-1).payload.text,/DXY/)
     f.calls.length=0; engine=await createEngine({...f.env,ADMIN_CHAT_ID:''})
     await engine.update(f.update(1011596614,'/status')); assert.equal(f.calls.length,0)
+    // No built-in admin: the former default ID cannot run admin commands either.
+    await engine.update(f.update(1011596614,'/grant 12345 XAUUSD')); await engine.update(f.update(1011596614,'/reset_quotes confirm'))
+    assert.ok(!f.calls.some(c=>/^Done/.test(c.payload.text||'')),'No admin command runs without ADMIN_CHAT_ID')
+    assert.deepEqual(JSON.parse(await f.store.command(['GET','tg-alerts-db'])).owned, {})
   } finally {f.db.close()}
 })
 test('housekeeping reports source failures, preserves diagnostics across restart, and empty news is healthy',async()=>{

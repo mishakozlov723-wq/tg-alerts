@@ -5,14 +5,10 @@ import http from 'node:http'
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import vm from 'node:vm'
 import assert from 'node:assert/strict'
 const root = fileURLToPath(new URL('../', import.meta.url)), publicDir = path.join(root, 'public')
-let html = readFileSync(path.join(publicDir, 'index.html'), 'utf8')
-const worker = readFileSync(path.join(root, 'cloudflare/worker.mjs'), 'utf8')
-// Exercise the actual production HTML shims too (not just the unpatched asset).
-const transform = worker.slice(worker.indexOf('    let html=await asset.text()') + '    let html=await asset.text()'.length, worker.indexOf('    return new Response(html,'))
-html = vm.runInNewContext('let html = source;\n' + transform + '\nhtml', { source: html })
+// The production page is served as-is: no runtime HTML patching in the worker.
+const html = readFileSync(path.join(publicDir, 'index.html'), 'utf8')
 assert.ok(html.includes("fetch('/api/access/redeem'"))
 let seq = 3, rejectNext = false, failSettings = false, redemptions = 0, configDelay = 0
 let alerts = [

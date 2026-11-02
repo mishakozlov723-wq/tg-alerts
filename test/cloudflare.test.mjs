@@ -101,7 +101,7 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
     assert.ok(r.data.includes('function restoreQuotes()'))
     assert.ok(r.data.includes('async function pollEvents()'))
    }
-   if(p!=='/setup.html'){assert.equal(r.headers.get('etag'),null);assert.equal(r.headers.get('content-encoding'),null);assert.ok(r.data.includes("fetch('/api/access/redeem'"));assert.ok(r.data.includes('ACCESS_SIGNING_SECRET в Alerts не совпадает'));assert.ok(!r.data.includes("catch { status.textContent = 'Invalid or already used code.' }"));assert.ok(r.data.includes('}, 1000)'));assert.ok(r.data.includes('window.quoteState(s, prices[s])'));assert.ok(!r.data.includes('snapshots ~10s'));assert.ok(r.data.includes('streaming'))}
+   if(p!=='/setup.html'){assert.ok(r.data.includes("fetch('/api/access/redeem'"));assert.ok(r.data.includes('Подождите ${wait} мин'));assert.ok(r.data.includes('ACCESS_SIGNING_SECRET в Alerts не совпадает'));assert.ok(!r.data.includes("catch { status.textContent = 'Invalid or already used code.' }"));assert.ok(r.data.includes('}, 1000)'));assert.ok(r.data.includes('window.quoteState(s, prices[s])'));assert.ok(!r.data.includes('snapshots ~10s'));assert.ok(r.data.includes('streaming'))}
   }
  })
  test('activation requires correct bot, then scheduler runs independently of UI',async()=>{

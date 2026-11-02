@@ -158,6 +158,16 @@ const mockFetch=(input,init)=>outbound(new Request(input,init))
   await waitFor(()=>telegram.some(x=>x.payload?.text?.includes('SLOW WEBHOOK CROSSING')))
   assert.equal(telegram.filter(x=>x.payload?.text?.includes('SLOW WEBHOOK CROSSING')).length,1)
  })
+ test('quick alert from chat text: EURUSD 1,0850 creates a price-level alert; unknown users are told to sign in',async()=>{
+  const say=async(id,text,n)=>{const r=await request('/telegram/webhook',{update_id:n,message:{chat:{id:Number(id),type:'private'},from:{id:Number(id)},text}},{'x-telegram-bot-api-secret-token':WEBHOOK});assert.equal(r.status,200)}
+  await say(uid,'eurusd 1,0850 quick note',7001)
+  await waitFor(()=>telegram.some(x=>x.payload?.text?.startsWith('✅ Alert set: EURUSD 1.085 · quick note')))
+  const a=(await getMain()).alerts.find(x=>x.userId===uid&&x.level===1.085&&x.note==='quick note')
+  assert.ok(a);assert.equal(a.dir,'reach');assert.equal(a.status,'active')
+  await say('55555','EURUSD 1.2',7002)
+  await waitFor(()=>telegram.some(x=>x.payload?.chat_id===55555&&x.payload?.text?.startsWith('Open Alerts once and sign in')))
+  assert.ok(!(await getMain()).alerts.some(x=>x.userId==='55555'))
+ })
  test('incoming ticks do not checkpoint prices or rewrite database on each update',async()=>{
   await sql.exec('CREATE TABLE audit_write(n INTEGER)');await sql.exec("CREATE TRIGGER audit_main AFTER UPDATE ON alerts_kv WHEN NEW.k='tg-alerts-db' BEGIN INSERT INTO audit_write VALUES(1); END")
   const before=(await sql.exec('SELECT count(*) AS n FROM audit_write'))[0].n

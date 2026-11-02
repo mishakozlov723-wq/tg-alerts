@@ -349,12 +349,9 @@ async function ensureAccess(authApi) {
       if (!/^\d{6}$/.test(code)) { status.textContent = 'Enter the 6-digit code.'; return }
       busy = true; control.setBusy(true); status.textContent = 'Checking code…'
       try {
-        const r = await fetch(authApi.replace(/\/$/, '') + '/api/verify-code', { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: 'alerts', code }) })
+        const r = await fetch('/api/access/redeem', { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project: 'alerts', code }) })
         const result = await r.json()
-        if (!result.token) {
-          status.textContent = r.status === 429 ? 'Too many attempts. Please wait before trying again.' : r.status >= 500 ? 'Access service unavailable. Try again.' : 'Invalid or already used code.'
-          return
-        }
+        if (!result.token) throw Object.assign(new Error(result.error || 'invalid_code'), { retryAfter: Number(result.retryAfter) })
         try { localStorage.setItem(ACCESS_KEY, result.token) } catch {}
         H['x-access-token'] = result.token
         // Resume hydration first. Keep the gate/busy state until bootstrap (or
@@ -363,7 +360,7 @@ async function ensureAccess(authApi) {
         status.textContent = 'Opening Alerts…'
         window.dispatchEvent(new Event('retocker-access-ready'))
         if (await entered) { status.textContent = ''; control.reset() }
-      } catch { status.textContent = 'Network error or timeout. Try again; request a new code if it was already used.' }
+      } catch (e) { const wait = e.retryAfter > 0 ? Math.ceil(e.retryAfter / 60) : 15; const messages = { access_signing_secret_mismatch: 'Ошибка настройки: ACCESS_SIGNING_SECRET в Alerts не совпадает с Access. Этот код уже погашен; после исправления получите новый.', too_many_attempts: `Слишком много попыток. Подождите ${wait} мин и получите новый код.`, invalid_or_expired_code: 'Код истёк или уже использован. Получите новый код Alerts в Access.', invalid_code: 'Введите шестизначный код Alerts.', configuration_incomplete: 'В Alerts не заполнены обязательные настройки.', access_connection_failed: 'Нет связи между Alerts и Access. Сообщите об этой ошибке.', access_unexpected_response: 'Cloudflare вернул неожиданный ответ вместо Access. Сообщите об этой ошибке.', service_unavailable: 'Access вернул внутреннюю ошибку. Сообщите об этой ошибке.' }; status.textContent = messages[e.message] || 'Не удалось выполнить вход. Проверьте соединение и адрес приложения. Если повторяется — сообщите об ошибке.' }
       finally { busy = false; control.setBusy(false) }
     } })
   }
@@ -608,22 +605,14 @@ async function loadNews() {
 
 function toast(t) { const e = $('#toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => (e.style.display = 'none'), 5000) }
 
-// smooth glide of displayed prices toward the real ones
-let lastT = performance.now()
-const TAU = 1500 // ms per stage: bigger = slower, softer glide
-const mid = {} // two chained smoothers = soft start AND soft finish
-function frame(now) {
-  const dt = Math.min(100, now - lastT); lastT = now
-  const k0 = 1 - Math.exp(-dt / TAU)
-  for (const k in prices) {
-    if (shown[k] == null) continue
-    if (mid[k] == null) mid[k] = shown[k]
-    mid[k] += (prices[k].price - mid[k]) * k0
-    const d = mid[k] - shown[k]
-    shown[k] = Math.abs(prices[k].price - shown[k]) < cfg.symbols[k].pip * 0.02 ? prices[k].price : shown[k] + d * k0
-  }
+// Display actual snapshots only, never animated intermediate prices.
+function frame() {
+  for (const k in shown) if (!cfg.symbols[k]) delete shown[k]
+  for (const k in prices) if (cfg.symbols[k] && Number.isFinite(prices[k].price)) shown[k] = prices[k].price
+  const state = s => window.quoteState(s, prices[s])
   $('#price').textContent = fmt(sym, shown[sym])
-  document.querySelectorAll('.asset').forEach((t) => (t.querySelector('span').textContent = fmt(t.dataset.s, shown[t.dataset.s])))
+  $('#psub').textContent = sym + ' · ' + state(sym)
+  document.querySelectorAll('.asset').forEach(t => { const s=t.dataset.s, stale=state(s) !== 'streaming'; t.querySelector('span').textContent = fmt(s, shown[s]) + (shown[s] != null && stale ? ' · last' : ''); t.title = state(s); t.dataset.stale = String(stale) })
   requestAnimationFrame(frame)
 }
 
@@ -785,7 +774,7 @@ function bootstrap() {
     $('#dbg').classList.remove('hide')
     $('#dbg').querySelectorAll('button').forEach((b) => b.onclick = () => { api('/api/debug/move', { method: 'POST', body: JSON.stringify({ symbol: sym, pips: +b.dataset.p }) }); toast(`${sym} ${+b.dataset.p > 0 ? '+' : ''}${b.dataset.p} pips`) })
   }
-  setInterval(() => tick().catch(() => {}), 400)
+  setInterval(() => {if (!document.hidden) tick().catch(() => {})}, 1000)
   appInitialized = true; $('#accessRetry').hidden = true; whenReady()
   } catch (e) {
     if (accessEntryDone) {

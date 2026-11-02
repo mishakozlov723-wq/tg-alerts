@@ -67,14 +67,35 @@ const taskErrors = { h4: false, live: false, news: false }
 let lastHousekeeping = monitor.snapshot().housekeepingAt || 0, accessNext = 0
 const telegramHealth = { success: 0, failure: 0, code: '' }
 // Reset of all purchases: drops purchases and orders, and the alerts on paid quotes. Alerts on free quotes stay.
+// /reset_quotes keeps a 30-day backup first; /restore_quotes merges it back
+// without removing anything created after the reset.
+const RESET_BACKUP_KEY = 'tg-alerts:reset-backup:v1', RESET_BACKUP_DAYS = 30
 async function resetQuotes() {
   const owners = Object.keys(db.owned).filter((u) => (db.owned[u] || []).length).length
   const before = db.alerts.length
+  const removed = db.alerts.filter((a) => SYMBOLS[a.symbol] && SYMBOLS[a.symbol].premium)
+  await redis(['SET', RESET_BACKUP_KEY, JSON.stringify({ at: Date.now(), owned: db.owned, orders: db.orders, alerts: removed }), 'EX', String(RESET_BACKUP_DAYS * 86400)])
   db.owned = {}
   db.orders = {}
   db.alerts = db.alerts.filter((a) => !(SYMBOLS[a.symbol] && SYMBOLS[a.symbol].premium))
   await save()
   return { owners, alerts: before - db.alerts.length }
+}
+async function restoreQuotes() {
+  const raw = await redis(['GET', RESET_BACKUP_KEY])
+  if (!raw) return null
+  const backup = JSON.parse(raw), result = { at: backup.at, owners: 0, orders: 0, alerts: 0 }
+  for (const [u, list] of Object.entries(backup.owned || {})) {
+    const merged = [...new Set([...(db.owned[u] || []), ...list])]
+    if (merged.length !== (db.owned[u] || []).length) result.owners++
+    db.owned[u] = merged
+  }
+  for (const [id, o] of Object.entries(backup.orders || {})) if (!db.orders[id]) { db.orders[id] = o; result.orders++ }
+  const ids = new Set(db.alerts.map((a) => a.id))
+  for (const a of backup.alerts || []) if (!ids.has(a.id)) { db.alerts.push(a); result.alerts++ }
+  db.alerts.sort((x, y) => x.id - y.id)
+  await save()
+  return result
 }
 // Existing purchases and paid alerts are preserved during migration.
 // Alert limit: 15 for everybody, 50 for users who bought any paid bundle.
@@ -612,11 +633,20 @@ async function handleUpdate(u) {
   if (uid === ADMIN_CHAT_ID) {
     if (/^\/reset_quotes(@\w+)?(\s+confirm)?$/i.test(txt)) {
       if (!/confirm$/i.test(txt)) {
-        await tg('sendMessage', { chat_id: m.chat.id, text: 'This removes ALL purchased quotes and orders for everybody, and deletes alerts on paid quotes (including yours).\n\nTo confirm send:\n/reset_quotes confirm' })
+        await tg('sendMessage', { chat_id: m.chat.id, text: `This removes ALL purchased quotes and orders for everybody, and deletes alerts on paid quotes (including yours). A backup is kept for ${RESET_BACKUP_DAYS} days.\n\nTo confirm send:\n/reset_quotes confirm` })
         return
       }
       const r = await resetQuotes()
-      await tg('sendMessage', { chat_id: m.chat.id, text: `Done. Purchases cleared for ${r.owners} users, ${r.alerts} alerts on paid quotes deleted.` })
+      await tg('sendMessage', { chat_id: m.chat.id, text: `Done. Purchases cleared for ${r.owners} users, ${r.alerts} alerts on paid quotes deleted.\n\nBackup kept for ${RESET_BACKUP_DAYS} days. To undo send:\n/restore_quotes confirm` })
+      return
+    }
+    if (/^\/restore_quotes(@\w+)?(\s+confirm)?$/i.test(txt)) {
+      if (!/confirm$/i.test(txt)) {
+        await tg('sendMessage', { chat_id: m.chat.id, text: 'This returns purchases, orders and paid-quote alerts from the last /reset_quotes backup. Nothing created since then is removed.\n\nTo confirm send:\n/restore_quotes confirm' })
+        return
+      }
+      const r = await restoreQuotes()
+      await tg('sendMessage', { chat_id: m.chat.id, text: r ? `Restored from the backup of ${new Date(r.at).toISOString().slice(0, 16).replace('T', ' ')} UTC: purchases for ${r.owners} users, ${r.orders} orders, ${r.alerts} alerts.` : `No backup found. Backups are kept for ${RESET_BACKUP_DAYS} days.` })
       return
     }
     const g = txt.match(/^\/(grant|revoke)\s+(\d+)\s+(\w+)$/i)

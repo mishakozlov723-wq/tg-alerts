@@ -179,3 +179,16 @@ test('chart create retried after a lost response reuses its requestId and does n
  assert.equal(f.list.length,2,'A new deliberate alert after a confirmed one is created')
  assert.notEqual(f.posts[2].requestId,f.posts[0].requestId)
 })
+
+test('mouse on + keeps following vertically; drag on + moves level without opening; tap opens at final price',async()=>{
+ const f=fixture();f.context.window.matchMedia=()=>({matches:true});f.select();await settle()
+ const m=(y,extra={})=>({...f.event(y),pointerType:'mouse',buttons:0,button:0,...extra})
+ f.el('#chartCanvas').events.pointermove(m(130))
+ assert.equal(f.el('#chartPlus').hidden,false);assert.equal(f.el('#chartPlus').style.top,'130px');assert.equal(f.lines.at(-1).lineStyle,2)
+ const plus=f.el('#chartPlus')
+ plus.events.pointermove(m(150));assert.equal(plus.style.top,'150px')
+ plus.events.pointerdown(m(150));plus.events.pointermove(m(152,{buttons:1}));assert.equal(plus.style.top,'150px','tiny jitter is not a drag')
+ plus.events.pointermove(m(170,{buttons:1}));plus.events.pointerup(m(170))
+ assert.equal(plus.style.top,'170px');plus.onclick();assert.equal(f.el('#chartTicket').hidden,true,'drag release must not open ticket')
+ plus.onclick();assert.equal(f.el('#chartPrice').value,'1.70000');assert.equal(f.lines.at(-1).lineStyle,0)
+})

@@ -62,6 +62,13 @@ OANDA_ENV и OANDA_SIDE общие с серверным quote feed (сейча�
 
 Источники: https://developers.cloudflare.com/workers/platform/limits/ · https://developers.cloudflare.com/durable-objects/platform/pricing/ · https://developer.oanda.com/rest-live-v20/instrument-df/
 
+## Плюс как в TradingView и полный экран
+- `+` у шкалы цены не «залипает»: пока мышь на нём, он продолжает идти за курсором по вертикали. Drag по `+` (мышь/палец) двигает уровень, отпускание после drag тикет не открывает; обычный тап/клик — открывает на текущей цене. Дрожание <4px не считается drag. `touch-action:none` на `+`, чтобы палец не скроллил страницу.
+- Hover-уровень пунктирный (как crosshair), выбранный/редактируемый — сплошной. Crosshair библиотеки по-прежнему скрыт.
+- Кнопка `#chartExpand` рядом с Reset view: секция переносится в `<body>` (без transform/stacking-предков), на её месте placeholder той же высоты, FLIP-анимация 420ms `cubic-bezier(.22,1,.36,1)`; при reduced motion — без анимации. Слой `z-index:8` после `.tabs` в DOM: выше навигации, ниже toast/access/intro/picker.
+- Выход: та же кнопка, Esc, Telegram BackButton (показывается только в полном экране). Вертикальные свайпы Telegram отключаются на время полного экрана и восстанавливаются, если были включены. При уходе с актива с графиком — автоматический выход.
+- Зум страницы остаётся запрещён: `maximum-scale=1`, `touch-action:pan-y` на слое, `gesturestart` блокируется (iOS). Пинч/пан графика работает как раньше.
+
 ## Проверки и запуск
 Node >=20; проверки запускаются на Node 24.
 - `npm ci --ignore-scripts`

@@ -6,6 +6,7 @@
   let chosen, draft, lines = [], alerts = [], active = false, loadedAt = 0, lastLive = 0, listVersion = 0, historyStale = true
   let candidate = null, holding = false, hold, start, axisDrag, touchActive = false, multiTouch = false, scaleBase = null, candidateTime = null, manualAsset = null, draftDrag = false, mouseHover = false
   let ticketOpen = false, ticketTimer, mutating = false
+  let plusDrag = null, plusSkipClick = false, expanded = false, placeholder = null, swipes = null
   // A lost POST response must not create a second alert on retry: the same
   // payload keeps the same requestId until the server confirms it.
   let createAttempt = null
@@ -72,8 +73,10 @@
   }
   function paintDraft(price, title = '') {
     if (Number.isFinite(price) && price > 0) {
-      if (draft) draft.applyOptions({ price, title })
-      else draft = series.createPriceLine({ price, color: palette.label, lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title })
+      // Hover level is dashed like a TradingView crosshair; a picked level turns solid.
+      const lineStyle = title ? 0 : 2
+      if (draft) draft.applyOptions({ price, title, lineStyle })
+      else draft = series.createPriceLine({ price, color: palette.label, lineWidth: 1, lineStyle, axisLabelVisible: true, title })
     } else { if (draft) series.removePriceLine(draft); draft = null }
   }
   function clearSelection() {
@@ -191,6 +194,40 @@
     if (!native && candidateTime !== null) chart.setCrosshairPosition(price, candidateTime, series)
     positionPlus()
   }
+  // Full screen moves the section to <body> (no transformed/stacking ancestors),
+  // leaves a same-height placeholder and FLIP-animates from the old box.
+  const collapse = () => setExpanded(false)
+  function telegramChrome(open) {
+    const tg = window.Telegram?.WebApp
+    if (!tg) return
+    const back = tg.BackButton
+    if (back?.onClick) { if (open) { back.onClick(collapse); back.show() } else { back.offClick?.(collapse); back.hide() } }
+    if (open) { swipes = tg.isVerticalSwipesEnabled; if (swipes) tg.disableVerticalSwipes?.() }
+    else { if (swipes) tg.enableVerticalSwipes?.(); swipes = null }
+  }
+  function setExpanded(open) {
+    const section = panel(), button = $('#chartExpand')
+    if (open === expanded || !section || (open && section.hidden)) return
+    const before = section.getBoundingClientRect()
+    expanded = open
+    if (open) {
+      placeholder = document.createElement('div'); placeholder.className = 'chart-placeholder'; placeholder.style.height = `${before.height}px`
+      section.before(placeholder); document.body.append(section)
+    } else if (placeholder) { placeholder.replaceWith(section); placeholder = null }
+    section.classList.toggle('is-expanded', open)
+    document.documentElement.classList.toggle('chart-expanded', open)
+    button.setAttribute('aria-pressed', String(open)); button.setAttribute('aria-label', open ? 'Exit full screen' : 'Full screen chart'); button.title = open ? 'Exit full screen' : 'Full screen'
+    telegramChrome(open)
+    const after = section.getBoundingClientRect()
+    if (section.animate && after.width && after.height && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      section.animate([
+        { transformOrigin: '0 0', transform: `translate(${before.left - after.left}px,${before.top - after.top}px) scale(${before.width / after.width},${before.height / after.height})` },
+        { transformOrigin: '0 0', transform: 'none' }
+      ], { duration: 420, easing: 'cubic-bezier(.22,1,.36,1)' })
+    }
+    button.focus?.({ preventScroll: true })
+    requestAnimationFrame(positionPlus); setTimeout(positionPlus, 440)
+  }
   function manual(open, instant = false) {
     const body = $('#manualBody'), toggle = $('#manualToggle')
     if (instant) body.classList.add('no-motion')
@@ -298,9 +335,34 @@
     canvas.addEventListener('lostpointercapture', () => endHold())
     // Keep the candidate when crossing from the canvas onto the sibling + button.
     canvas.parentElement.addEventListener('pointerleave', e => {
-      if (e.pointerType === 'mouse' && mouseHover && !holding && !draftDrag && !ticketOpen) clearSelection()
+      if (e.pointerType === 'mouse' && mouseHover && !holding && !draftDrag && !plusDrag && !ticketOpen) clearSelection()
     })
-    $('#chartPlus').onclick = () => { if (candidate !== null) selection(candidate) }
+    // Like TradingView, the + keeps tracking while the pointer is on it: mouse hover
+    // follows vertically; touch/mouse drag on + moves the level, a plain tap opens it.
+    const plus = $('#chartPlus')
+    const plusPoint = e => ({ x: canvas.clientWidth - chart.priceScale('right').width() - 1, y: point(e).y - (plusDrag?.offset || 0) })
+    plus.addEventListener('pointerdown', e => {
+      if (!e.isPrimary || e.button > 0 || mutating || ticketOpen || candidate === null) return
+      const y = series.priceToCoordinate(candidate)
+      plusDrag = { id: e.pointerId, y: e.clientY, offset: Number.isFinite(y) ? point(e).y - y : 0, moved: false }
+      plus.setPointerCapture?.(e.pointerId)
+    })
+    plus.addEventListener('pointermove', e => {
+      if (plusDrag && plusDrag.id === e.pointerId) {
+        if (!plusDrag.moved && Math.abs(e.clientY - plusDrag.y) < 4) return
+        plusDrag.moved = true; e.preventDefault?.(); moveCandidate(plusPoint(e)); return
+      }
+      if (e.pointerType === 'mouse' && !e.buttons && mouseHover && active && !ticketOpen && !mutating) moveCandidate(plusPoint(e), true)
+    }, { passive:false })
+    const endPlus = e => { if (plusDrag && plusDrag.id === e.pointerId) { plusSkipClick = plusDrag.moved; plusDrag = null } }
+    plus.addEventListener('pointerup', endPlus)
+    plus.addEventListener('pointercancel', e => { endPlus(e); plusSkipClick = false })
+    plus.addEventListener('lostpointercapture', e => endPlus(e))
+    plus.onclick = () => { if (plusSkipClick) { plusSkipClick = false; return } if (candidate !== null) selection(candidate) }
+    $('#chartExpand').onclick = () => setExpanded(!expanded)
+    document.addEventListener('keydown', e => { if (expanded && e.key === 'Escape') setExpanded(false) })
+    // Page zoom stays blocked in full screen too (iOS ignores maximum-scale); the chart keeps its own pinch.
+    document.addEventListener('gesturestart', e => { if (expanded) e.preventDefault() }, { passive:false })
     // Explicit price-axis drag works for both touch and mouse without stealing pane pan/pinch.
     const axis = $('#chartAxis')
     axis.onpointerdown = e => {
@@ -382,7 +444,7 @@
         if (asset !== manualAsset) manual(!active, true)
         manualAsset = asset
       }
-      if (!active) { generation++; touchActive = false; if (chart) clearSelection(); return }
+      if (!active) { generation++; touchActive = false; setExpanded(false); if (chart) clearSelection(); return }
       try {
         init()
         if (changed) { symbol=asset; series.applyOptions({ priceFormat: { type:'price', precision:digits(), minMove:10 ** -digits() } }); $('#chartPrice').step = String(10 ** -digits()); generation++; listVersion++; rows=[]; hasMore=false; lastLive=0; historyStale=true; clearSelection(); series.setData([]); paintAlerts(); reset(); status('Loading…') }

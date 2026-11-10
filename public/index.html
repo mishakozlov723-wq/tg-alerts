@@ -174,7 +174,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,body *::-webkit-scrollbar{displa
       <div class="price" id="price">—</div>
       <div class="psub" id="psub">&nbsp;</div>
       <section id="gbpChart" hidden aria-label="Price chart">
-        <div class="chart-heading"><b id="chartSymbol">GBPUSD</b><button id="chartReset" class="chart-action" type="button">Reset view</button></div>
+        <div class="chart-heading"><b id="chartSymbol">GBPUSD</b><div class="chart-tools"><button id="chartReset" class="chart-action" type="button">Reset view</button><button id="chartExpand" class="chart-action" type="button" aria-label="Full screen chart" aria-pressed="false" title="Full screen"></button></div></div>
         <div id="chartFrames" aria-label="Timeframe"><button class="on" data-tf="M15">M15</button><button data-tf="H1">H1</button><button data-tf="H4">H4</button><button data-tf="D1">D1</button></div>
         <div class="chart-plot"><div id="chartCanvas" aria-label="Candlestick chart"></div><div id="chartAxis" aria-label="Drag to scale price" title="Drag to scale price"></div><button id="chartPlus" type="button" aria-label="Add alert at crosshair" hidden>+</button></div>
         <div id="chartFresh" role="status"></div><div id="chartStatus" role="status">Loading…</div>

@@ -969,7 +969,8 @@ function feedRecipients() {
   const recipients = {}
   for (const a of db.alerts) {
     if (a.status !== 'active' || isPremium(a.symbol) && !ownsQuote(a.userId, a.symbol)) continue
-    ;(recipients[a.userId] ||= {})[a.symbol] = quoteFeed.fresh(a.symbol)
+    // null = broker pause (nightly break, holiday): neither a warning nor a recovery.
+    ;(recipients[a.userId] ||= {})[a.symbol] = quoteFeed.paused(a.symbol) ? null : quoteFeed.fresh(a.symbol)
   }
   // The owner receives one report, not both admin and ordinary-user copies.
   if (BOT_TOKEN && ADMIN_CHAT_ID) {
@@ -982,7 +983,7 @@ function feedNoticeCurrent(event, recipients) {
   const symbols = recipients[event.userId]
   if (!quoteFeed.marketOpen() || !symbols) return false
   if (event.feedSymbols) return event.feedSymbols.some(s => Object.hasOwn(symbols,s) && symbols[s] === (event.feedNotice === 'recovery'))
-  const bad = Object.values(symbols).some(fresh => !fresh)
+  const bad = Object.values(symbols).some(fresh => fresh === false)
   return event.feedNotice === 'warning' ? bad : !bad
 }
 async function watchFeed() {

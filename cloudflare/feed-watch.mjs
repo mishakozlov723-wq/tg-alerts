@@ -20,7 +20,8 @@ export function sampleFeedWatch(state, { now, open, recipients }) {
     s.badBySymbol ||= {}; s.goodBySymbol ||= {}
     s.symbols = (s.symbols || []).filter(symbol => Object.hasOwn(symbols,symbol))
     if (!open) { s.badBySymbol = {}; s.goodBySymbol = {}; continue }
-    const stale = Object.keys(symbols).filter(symbol => !symbols[symbol]).sort()
+    // null marks a broker pause: its timer resets and it is never reported as stale.
+    const stale = Object.keys(symbols).filter(symbol => symbols[symbol] === false).sort()
     for (const symbol of Object.keys(s.badBySymbol)) if (!stale.includes(symbol)) delete s.badBySymbol[symbol]
     for (const symbol of stale) s.badBySymbol[symbol] ??= now
     const due = stale.filter(symbol => !s.symbols.includes(symbol) && now - s.badBySymbol[symbol] >= FEED_WARNING_DELAY_MS)

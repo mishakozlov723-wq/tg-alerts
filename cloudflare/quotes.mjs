@@ -7,6 +7,15 @@ export function dxyFormula(q) {
 const PAIRS=['EUR_USD','GBP_USD','USD_JPY','USD_CAD','USD_SEK','USD_CHF']
 const stopped=()=>Object.assign(new Error('stream_stopped'),{name:'AbortError'})
 function pause(ms,signal){return new Promise((resolve,reject)=>{if(signal.aborted)return reject(stopped());const finish=()=>{signal.removeEventListener('abort',cancel);resolve()},timer=setTimeout(finish,ms),cancel=()=>{clearTimeout(timer);signal.removeEventListener('abort',cancel);reject(stopped())};signal.addEventListener('abort',cancel,{once:true})})}
+// OANDA closes every FX instrument 16:59-17:05 New York time on each trading day.
+const breakClock=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hourCycle:'h23'})
+export function fxDailyBreak(ms=Date.now()){
+ const p=Object.fromEntries(breakClock.formatToParts(ms).map(x=>[x.type,x.value])),m=Number(p.hour)*60+Number(p.minute)
+ return m>=16*60+59&&m<17*60+5
+}
+// A broker "closed" status counts only while it keeps being re-observed, so an
+// outage that begins during a pause still surfaces once the status goes stale.
+const PAUSE_STATUS_MAX_AGE_MS=180000
 export function createQuoteFeed(env){
  const fetch=env.FETCH||globalThis.fetch
  const SYMBOLS={
@@ -26,6 +35,11 @@ export function createQuoteFeed(env){
  let revision=0,savedRevision=0,nextRefresh=0
  const identity=JSON.stringify([env.OANDA_ENV||'practice',env.OANDA_ACCOUNT||'',env.OANDA_SIDE||'bid',capOn,env.CAPITAL_ENV||'demo',env.CAPITAL_SIDE||'mid',SYMBOLS])
  const fresh=s=>trade[s]===true&&!!prices[s]&&Date.now()-prices[s].observedAt<30000&&Date.now()-prices[s].dataTs<=30000
+ // Scheduled or broker-reported pause: quotes are not broken, the broker is simply not quoting.
+ const shut={}
+ const paused=s=>fxDailyBreak()||
+  (!!prices[s]&&['CLOSED','OFFLINE','SUSPENDED'].includes(prices[s].marketStatus)&&Date.now()-prices[s].observedAt<PAUSE_STATUS_MAX_AGE_MS)||
+  (s==='DXY'&&!capOn&&PAIRS.some(x=>Date.now()-(shut[x]||0)<PAUSE_STATUS_MAX_AGE_MS))
  function restore(raw){
   try{
    const v=JSON.parse(raw);if(v.version!==1||v.identity!==identity)return
@@ -57,7 +71,7 @@ export function createQuoteFeed(env){
   if(!Number.isFinite(bid)||!Number.isFinite(ask)||bid<=0||ask<=0||!Number.isFinite(dataTs)||dataTs>Date.now()+60000||dataTs<(times[p.instrument]||0))return
   const valid=p.tradeable===true&&Date.now()-dataTs<=30000&&dataTs<=Date.now()+60000
   times[p.instrument]=dataTs
-  if(PAIRS.includes(p.instrument)){mids[p.instrument]=(bid+ask)/2;trade[p.instrument]=valid}
+  if(PAIRS.includes(p.instrument)){mids[p.instrument]=(bid+ask)/2;trade[p.instrument]=valid;if(p.tradeable===false)shut[p.instrument]=Date.now();else delete shut[p.instrument]}
   const item=Object.entries(SYMBOLS).find(([,c])=>c.oanda===p.instrument)
   if(item&&!(item[1].premium&&capOn)){
    const [s,c]=item;trade[s]=valid;const side=env.OANDA_SIDE||'bid',v=side==='ask'?ask:side==='mid'?(bid+ask)/2:bid
@@ -185,6 +199,7 @@ export function createQuoteFeed(env){
   async probe(){await discover();const d=await get(`/v3/accounts/${encodeURIComponent(account)}/pricing?instruments=${encodeURIComponent(PAIRS.join(','))}`);if(!Array.isArray(d.prices)||!['EUR_USD','GBP_USD'].every(s=>d.prices.some(p=>p.instrument===s)))throw new Error('broker_prices_unavailable');await pollCapital(null);if(capOn&&errors.capital)throw new Error('Capital_feed_unavailable');return {oanda:true,capital:capOn}},
   tradeable:s=>trade[s]===true,
   fresh,
+  paused,
   status:()=>({mode:'stream',source,connected,lastMessage,displayIntervalMs:1000,capitalIntervalMs:1500,capitalSchedule:{...CAPITAL_SCHEDULE,hotOpenMs:1500},pricing:{oandaEnvironment:env.OANDA_ENV||'practice',oandaSide:env.OANDA_SIDE||'bid',capitalSide:env.CAPITAL_SIDE||'mid',quotes:Object.fromEntries(['EURUSD','GBPUSD'].filter(s=>prices[s]).map(s=>[s,{receivedAgeMs:Math.round(Date.now()-prices[s].observedAt),sourceAgeMs:Math.round(Date.now()-prices[s].dataTs),spreadPips:Number(prices[s].spreadPips?.toFixed(3)),tradeable:prices[s].tradeable}]))},errors:{...errors},capitalDiagnostics:{...capitalDiagnostics,quoteTimingVersion:1,quotes:Object.fromEntries(Object.entries(capitalDiagnostics.quotes||{}).map(([s,q])=>[s,{...q,sourceAgeMs:Number.isFinite(q.sourceTime)?Math.round(Date.now()-q.sourceTime):null,receivedAgeMs:Number.isFinite(q.receivedAt)?Math.round(Date.now()-q.receivedAt):null}])),nextRetryAt:capNext,consecutiveFailures:capFails},tradeable:{...trade}}),
  }
 }
